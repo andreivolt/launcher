@@ -95,10 +95,11 @@ impl Entry {
 struct App {
     query: String,
     entries: Vec<Entry>,
-    filtered: Vec<(usize, Vec<usize>)>, // (entry_idx, match_indices)
+    filtered: Vec<usize>,
     selected: usize,
     matcher: SkimMatcherV2,
     visible: bool,
+    icon_index: HashMap<String, PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,8 +166,9 @@ fn ipc_subscription() -> Subscription<Message> {
 
 impl App {
     fn new() -> (Self, Task<Message>) {
-        let entries = collect_all_entries();
-        let filtered: Vec<(usize, Vec<usize>)> = (0..entries.len()).map(|i| (i, vec![])).collect();
+        let icon_index = build_icon_index();
+        let entries = collect_entries(&icon_index);
+        let filtered: Vec<usize> = (0..entries.len()).collect();
 
         // Start hidden in special workspace
         std::thread::spawn(|| {
@@ -184,6 +186,7 @@ impl App {
                 selected: 0,
                 matcher: SkimMatcherV2::default(),
                 visible: false,
+                icon_index,
             },
             Task::none(),
         )
@@ -195,7 +198,7 @@ impl App {
         use iced::window::Event as WindowEvent;
 
         // Listen to ALL events and filter
-        let events = event::listen_with(|event, status, _window| {
+        let events = event::listen_with(|event, _status, _window| {
             match &event {
                 Event::Keyboard(KeyEvent::KeyPressed { key, modifiers, .. }) => {
                     match key {
@@ -242,8 +245,8 @@ impl App {
                 return self.resize_to_fit();
             }
             Message::Submit => {
-                if let Some((idx, _)) = self.filtered.get(self.selected) {
-                    if let Some(entry) = self.entries.get(*idx) {
+                if let Some(&idx) = self.filtered.get(self.selected) {
+                    if let Some(entry) = self.entries.get(idx) {
                         // Close special workspace first so new app opens on main workspace
                         let _ = Command::new("hyprctl")
                             .args(["dispatch", "togglespecialworkspace", "launcher"])
@@ -312,7 +315,7 @@ impl App {
     fn show(&mut self) -> Task<Message> {
         self.visible = true;
         self.query.clear();
-        self.entries = collect_all_entries();
+        self.entries = collect_entries(&self.icon_index);
         self.filter();
         self.selected = 0;
         Task::batch([
@@ -358,8 +361,8 @@ impl App {
             .iter()
             .take(20)
             .enumerate()
-            .fold(Column::new().spacing(0), |col, (i, (idx, _))| {
-                let entry = &self.entries[*idx];
+            .fold(Column::new().spacing(0), |col, (i, &idx)| {
+                let entry = &self.entries[idx];
                 let selected = i == self.selected;
 
                 let prefix = if entry.is_window() { "● " } else { "" };
@@ -488,24 +491,23 @@ impl App {
 
     fn filter(&mut self) {
         if self.query.is_empty() {
-            self.filtered = (0..self.entries.len()).map(|i| (i, vec![])).collect();
+            self.filtered = (0..self.entries.len()).collect();
         } else {
             let mut scored: Vec<_> = self
                 .entries
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, e)| {
-                    // Get best match with indices
-                    let best = e
+                    let best_score = e
                         .searchable()
                         .iter()
-                        .filter_map(|s| self.matcher.fuzzy_indices(s, &self.query))
-                        .max_by_key(|(score, _)| *score)?;
-                    Some((best.0, idx, best.1))
+                        .filter_map(|s| self.matcher.fuzzy_match(s, &self.query))
+                        .max()?;
+                    Some((best_score, idx))
                 })
                 .collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0));
-            self.filtered = scored.into_iter().map(|(_, idx, indices)| (idx, indices)).collect();
+            self.filtered = scored.into_iter().map(|(_, idx)| idx).collect();
         }
     }
 }
@@ -533,10 +535,9 @@ fn activate(entry: &Entry) {
     }
 }
 
-fn collect_all_entries() -> Vec<Entry> {
-    let icon_index = build_icon_index();
-    let mut entries = collect_hyprland_windows(&icon_index);
-    entries.extend(collect_desktop_entries(&icon_index));
+fn collect_entries(icon_index: &HashMap<String, PathBuf>) -> Vec<Entry> {
+    let mut entries = collect_hyprland_windows(icon_index);
+    entries.extend(collect_desktop_entries(icon_index));
     entries
 }
 
