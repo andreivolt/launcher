@@ -78,6 +78,8 @@ enum Entry {
         name: String,
         desktop_file: PathBuf,
         action: Option<String>,
+        exec: Option<String>,
+        terminal: bool,
         icon: Option<PathBuf>,
         keywords: Vec<String>,
     },
@@ -591,17 +593,36 @@ impl App {
 
 fn activate(entry: &Entry) {
     match entry {
-        Entry::Desktop { desktop_file, action, .. } => {
-            let mut cmd = Command::new("gio");
-            cmd.arg("launch");
-            if let Some(action_id) = action {
-                cmd.arg(format!("--action={}", action_id));
+        Entry::Desktop { desktop_file, action, exec, terminal, .. } => {
+            if *terminal {
+                // Terminal apps: use $TERMINAL or fall back to common terminals
+                if let Some(exec_line) = exec {
+                    let cmd_str: String = exec_line
+                        .split_whitespace()
+                        .filter(|s| !s.starts_with('%'))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let term = env::var("TERMINAL").unwrap_or_else(|_| "kitty".to_string());
+                    let _ = Command::new(&term)
+                        .args(["-e", "sh", "-c", &cmd_str])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                }
+            } else {
+                // GUI apps: use gio launch
+                let mut cmd = Command::new("gio");
+                cmd.arg("launch");
+                if let Some(action_id) = action {
+                    cmd.arg(format!("--action={}", action_id));
+                }
+                cmd.arg(desktop_file);
+                cmd.stdin(std::process::Stdio::null())
+                   .stdout(std::process::Stdio::null())
+                   .stderr(std::process::Stdio::null());
+                let _ = cmd.spawn();
             }
-            cmd.arg(desktop_file);
-            cmd.stdin(std::process::Stdio::null())
-               .stdout(std::process::Stdio::null())
-               .stderr(std::process::Stdio::null());
-            let _ = cmd.spawn();
         }
         Entry::Window { address, .. } => {
             let _ = Command::new("hyprctl")
@@ -800,6 +821,7 @@ fn parse_desktop_file(path: &PathBuf, icon_index: &HashMap<String, PathBuf>) -> 
     let mut main_icon_name = None;
     let mut no_display = false;
     let mut hidden = false;
+    let mut terminal = false;
     let mut keywords = Vec::new();
     let mut actions_list: Vec<String> = Vec::new();
 
@@ -829,6 +851,7 @@ fn parse_desktop_file(path: &PathBuf, icon_index: &HashMap<String, PathBuf>) -> 
                     "Icon" => main_icon_name = Some(value.to_string()),
                     "NoDisplay" => no_display = value == "true",
                     "Hidden" => hidden = value == "true",
+                    "Terminal" => terminal = value == "true",
                     "Keywords" => {
                         keywords = value.split(';').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
                     }
@@ -867,6 +890,8 @@ fn parse_desktop_file(path: &PathBuf, icon_index: &HashMap<String, PathBuf>) -> 
                 name,
                 desktop_file: path.clone(),
                 action: None,
+                exec: main_exec.clone(),
+                terminal,
                 icon: icon.clone(),
                 keywords: keywords.clone(),
             });
@@ -875,7 +900,7 @@ fn parse_desktop_file(path: &PathBuf, icon_index: &HashMap<String, PathBuf>) -> 
 
     // Add action entries
     for action_id in actions_list {
-        if let Some((Some(action_name), Some(_))) = actions.get(&action_id) {
+        if let Some((Some(action_name), Some(action_exec))) = actions.get(&action_id) {
             let display_name = if let Some(ref app_name) = main_name {
                 format!("{}: {}", app_name, action_name)
             } else {
@@ -885,6 +910,8 @@ fn parse_desktop_file(path: &PathBuf, icon_index: &HashMap<String, PathBuf>) -> 
                 name: display_name,
                 desktop_file: path.clone(),
                 action: Some(action_id.clone()),
+                exec: Some(action_exec.clone()),
+                terminal,
                 icon: icon.clone(),
                 keywords: vec![],
             });

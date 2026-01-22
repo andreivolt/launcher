@@ -90,12 +90,12 @@
               wantedBy = [ "hyprland-session.target" ];
               partOf = [ "hyprland-session.target" ];
               after = [ "hyprland-session.target" ];
-              path = [ pkgs.hyprland pkgs.util-linux ];
+              path = [ pkgs.hyprland pkgs.util-linux pkgs.glib ];
               serviceConfig = {
                 ExecStart = "${launcherPkg}/bin/launcher";
                 Restart = "on-failure";
                 RestartSec = 2;
-                PassEnvironment = "HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR WAYLAND_DISPLAY";
+                PassEnvironment = "HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR WAYLAND_DISPLAY TERMINAL XDG_DATA_DIRS";
               };
             };
           };
