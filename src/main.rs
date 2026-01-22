@@ -8,9 +8,10 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use strsim::jaro_winkler;
 use iced::font::{Family, Weight};
 use iced::keyboard::{key::Named, Key};
-use iced::widget::{column, container, image, mouse_area, row, scrollable, text, text_input, Column};
+use iced::widget::{column, container, image, mouse_area, row, scrollable, stack, text, text_input, Column};
 use iced::window;
-use iced::{Element, Font, Length, Subscription, Task, Theme};
+use iced::{Color, Element, Font, Length, Padding, Subscription, Task, Theme};
+use iced::application::Appearance;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
@@ -20,8 +21,11 @@ use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::Command;
 
-const ICON_SIZE: u16 = 20;
+const GOLDEN_RATIO: f32 = 1.618;
 const TEXT_SIZE: u16 = 16;
+const INPUT_SIZE: f32 = TEXT_SIZE as f32 * GOLDEN_RATIO;  // ~26px
+const INPUT_PADDING: f32 = 8.0 * GOLDEN_RATIO;  // ~13px
+const ICON_SIZE: u16 = 20;
 const ROW_PADDING: u16 = 4;
 
 fn socket_path() -> PathBuf {
@@ -54,11 +58,13 @@ fn get_width() -> u16 {
 }
 
 fn main() -> iced::Result {
+    env_logger::init();
     let width = get_width();
     let window_settings = window::Settings {
         size: iced::Size::new(width as f32, 40.0),
         decorations: false,
         resizable: true,
+        transparent: true,
         platform_specific: window::settings::PlatformSpecific {
             application_id: "launcher".to_string(),
             ..Default::default()
@@ -69,6 +75,10 @@ fn main() -> iced::Result {
     iced::application("launcher", App::update, App::view)
         .subscription(App::subscription)
         .theme(|_| Theme::Dark)
+        .style(|_state, _theme| Appearance {
+            background_color: Color::from_rgba(0.0, 0.0, 0.0, 0.85),
+            text_color: Color::WHITE,
+        })
         .default_font(FONT)
         .window(window_settings)
         .exit_on_close_request(false)
@@ -163,6 +173,8 @@ enum Message {
     Select(usize),
     ClearQuery,
     DeleteWord,
+    TabComplete,
+    CursorToEnd,
     Hide,
     Toggle,
     Show,
@@ -264,6 +276,7 @@ impl App {
                         Key::Named(Named::ArrowDown) => Some(Message::SelectNext),
                         Key::Named(Named::ArrowUp) => Some(Message::SelectPrev),
                         Key::Named(Named::Enter) => Some(Message::Submit),
+                        Key::Named(Named::Tab) => Some(Message::TabComplete),
                         Key::Character(c) if modifiers.control() => {
                             match c.to_lowercase().as_str() {
                                 "j" => Some(Message::SelectNext),
@@ -272,6 +285,7 @@ impl App {
                                 "p" => Some(Message::SelectPrev),
                                 "u" => Some(Message::ClearQuery),
                                 "w" => Some(Message::DeleteWord),
+                                "e" => Some(Message::CursorToEnd),
                                 _ => None,
                             }
                         }
@@ -356,6 +370,24 @@ impl App {
                 self.selected = 0;
                 return self.resize_to_fit();
             }
+            Message::TabComplete => {
+                // Complete to top match if it starts with query
+                if let Some(&idx) = self.filtered.first() {
+                    let name = self.entries[idx].name();
+                    if name.to_lowercase().starts_with(&self.query.to_lowercase()) {
+                        self.query = name.to_string();
+                        self.filter();
+                        self.selected = 0;
+                        return Task::batch([
+                            self.resize_to_fit(),
+                            text_input::move_cursor_to_end(text_input::Id::new("search")),
+                        ]);
+                    }
+                }
+            }
+            Message::CursorToEnd => {
+                return text_input::move_cursor_to_end(text_input::Id::new("search"));
+            }
             Message::Hide => {
                 return self.hide();
             }
@@ -397,11 +429,23 @@ impl App {
     }
 
     fn resize_to_fit(&self) -> Task<Message> {
+        let input_height = (INPUT_SIZE + INPUT_PADDING * 2.0) as usize;
         let icon_container_size = ICON_SIZE + 4;
         let row_height = (icon_container_size + ROW_PADDING * 2) as usize;
         let max_visible = 10;
         let num_results = self.filtered.len().min(max_visible);
-        let height = (row_height + (num_results * row_height)) as i32;
+        let divider_height = 1;
+
+        let height = if num_results == 0 && !self.query.is_empty() {
+            // "No matches" state: input + divider + no matches text
+            (input_height + divider_height + row_height) as i32
+        } else if num_results == 0 {
+            // Empty query: just input
+            input_height as i32
+        } else {
+            // Results: input + divider + results
+            (input_height + divider_height + num_results * row_height) as i32
+        };
 
         // Resize window
         let _ = Command::new("hyprctl")
@@ -431,12 +475,31 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        let input_height = INPUT_SIZE + INPUT_PADDING * 2.0;
+
+        // Ghost text: show when top result starts with query
+        let ghost_completion = if !self.query.is_empty() {
+            self.filtered.first().and_then(|&idx| {
+                let name = self.entries[idx].name();
+                let name_lower = name.to_lowercase();
+                let query_lower = self.query.to_lowercase();
+                if name_lower.starts_with(&query_lower) {
+                    Some(name.chars().skip(self.query.chars().count()).collect::<String>())
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
         let input_field = text_input("Search...", &self.query)
             .id(text_input::Id::new("search"))
             .on_input(Message::QueryChanged)
-            .padding([ROW_PADDING, 8])
-            .size(TEXT_SIZE)
-            .line_height(text::LineHeight::Absolute((ICON_SIZE + ROW_PADDING).into()))
+            .padding([INPUT_PADDING as u16, INPUT_PADDING as u16])
+            .size(INPUT_SIZE)
+            .width(Length::Fill)
+            .line_height(text::LineHeight::Absolute(INPUT_SIZE.into()))
             .style(|_theme, _status| text_input::Style {
                 background: iced::Background::Color(iced::Color::TRANSPARENT),
                 border: iced::Border::default(),
@@ -445,6 +508,36 @@ impl App {
                 value: iced::Color::from_rgb(0.85, 0.85, 0.85),
                 selection: iced::Color::from_rgba(0.3, 0.5, 0.8, 0.3),
             });
+
+        // Ghost text: use same layout as input - invisible query + visible completion
+        let ghost_text = ghost_completion.unwrap_or_default();
+        let ghost_visible = !ghost_text.is_empty();
+
+        let ghost_layer: Element<Message> = row![
+            // Invisible spacer matching query text
+            text(self.query.clone())
+                .size(INPUT_SIZE)
+                .font(FONT)
+                .line_height(text::LineHeight::Absolute(INPUT_SIZE.into()))
+                .color(iced::Color::TRANSPARENT),
+            // Visible ghost completion with ellipsis
+            ellipsized_text(ghost_text.clone())
+                .size(INPUT_SIZE)
+                .font(FONT)
+                .line_height(text::LineHeight::Absolute(INPUT_SIZE.into()))
+                .color(if ghost_visible {
+                    iced::Color::from_rgba(0.5, 0.5, 0.5, 0.6)
+                } else {
+                    iced::Color::TRANSPARENT
+                })
+        ]
+        .padding([INPUT_PADDING as u16, INPUT_PADDING as u16])
+        .into();
+
+        // Stack: ghost behind (first), input on top (second)
+        let input_area: Element<Message> = stack![ghost_layer, input_field]
+            .width(Length::Fill)
+            .into();
 
         let divider: Element<Message> = container(iced::widget::Space::new(Length::Fill, 1))
             .style(|_theme| container::Style {
@@ -471,14 +564,15 @@ impl App {
                 };
 
                 // Use ellipsized text with proper truncation
+                let icon_container_size = ICON_SIZE + 4;
                 let label: Element<Message> = ellipsized_text(name)
-                    .size(16)
+                    .size(TEXT_SIZE)
+                    .line_height(iced::widget::text::LineHeight::Absolute((icon_container_size as f32).into()))
                     .color(base_color)
                     .font(FONT)
                     .into();
 
                 // Icon in circular container with subtle fill
-                let icon_container_size = ICON_SIZE + 4;
                 let is_window = entry.is_window();
                 let icon_inner: Element<Message> = if let Some(icon_path) = entry.icon() {
                     image(icon_path.clone())
@@ -514,7 +608,7 @@ impl App {
                     .width(Length::Fill)
                     .style(move |_theme| container::Style {
                         background: if selected {
-                            Some(iced::Background::Color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.1)))
+                            Some(iced::Background::Color(iced::Color::from_rgba(0.3, 0.5, 0.8, 0.15)))
                         } else {
                             None
                         },
@@ -553,15 +647,28 @@ impl App {
             });
 
         let content: Element<Message> = if self.filtered.is_empty() {
-            column![input_field].spacing(0).into()
+            if self.query.is_empty() {
+                column![input_area].spacing(0).into()
+            } else {
+                // No matches state
+                let no_matches = container(
+                    text("No matches")
+                        .size(TEXT_SIZE)
+                        .color(iced::Color::from_rgba(0.5, 0.5, 0.5, 0.7))
+                        .font(FONT)
+                )
+                .padding([ROW_PADDING, INPUT_PADDING as u16])
+                .width(Length::Fill);
+                column![input_area, divider, no_matches].spacing(0).into()
+            }
         } else {
-            column![input_field, divider, scroll_area].spacing(0).into()
+            column![input_area, divider, scroll_area].spacing(0).into()
         };
 
         container(content)
             .width(self.width)
             .style(|_theme| container::Style {
-                background: Some(iced::Background::Color(iced::Color::from_rgb(0.08, 0.08, 0.08))),
+                background: None,  // Let window background show through
                 ..Default::default()
             })
             .into()
@@ -617,19 +724,30 @@ impl App {
                         .max()
                         .unwrap_or(0);
 
-                    // Try jaro-winkler (typo tolerance)
-                    let jw_score: u32 = e
-                        .searchable()
-                        .iter()
-                        .map(|s| (jaro_winkler(&query_lower, &s.to_lowercase()) * 1000.0) as u32)
-                        .max()
-                        .unwrap_or(0);
+                    // Only use jaro-winkler for typo tolerance if nucleo found nothing
+                    // and require high similarity (0.85+)
+                    let jw_score: u32 = if nucleo_score == 0 {
+                        e.searchable()
+                            .iter()
+                            .map(|s| (jaro_winkler(&query_lower, &s.to_lowercase()) * 1000.0) as u32)
+                            .filter(|&s| s >= 850) // Only accept high similarity
+                            .max()
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
 
-                    // Combine: best match score + frecency boost
-                    let match_score = nucleo_score.max(jw_score);
-                    let frecency_boost = self.frecency.score(&e.frecency_key());
-                    let total = match_score + frecency_boost;
-                    if match_score > 500 { Some((total, idx)) } else { None }
+                    // Check for exact prefix match (huge bonus)
+                    let prefix_bonus: u32 = if e.searchable().iter().any(|s|
+                        s.to_lowercase().starts_with(&query_lower)
+                    ) { 10000 } else { 0 };
+
+                    // Combine: match score dominates, frecency as tiebreaker
+                    let match_score = nucleo_score.max(jw_score) + prefix_bonus;
+                    if match_score == 0 { return None; }
+                    let frecency_boost = self.frecency.score(&e.frecency_key()).min(200);
+                    let total = match_score * 10 + frecency_boost;
+                    Some((total, idx))
                 })
                 .collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0));
