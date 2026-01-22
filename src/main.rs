@@ -1,8 +1,11 @@
+mod ellipsized_text;
+
+use ellipsized_text::ellipsized_text;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use iced::font::{Family, Weight};
 use iced::keyboard::{key::Named, Key};
-use iced::widget::{column, container, image, rich_text, row, scrollable, span, text_input, Column};
+use iced::widget::{column, container, image, mouse_area, row, scrollable, text, text_input, Column};
 use iced::window;
 use iced::{Element, Font, Length, Subscription, Task, Theme};
 use serde::Deserialize;
@@ -14,17 +17,43 @@ use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::Command;
 
-const ICON_SIZE: u16 = 28;
-const SOCKET_PATH: &str = "/tmp/launcher.sock";
+const ICON_SIZE: u16 = 20;
+const TEXT_SIZE: u16 = 16;
+const ROW_PADDING: u16 = 4;
+
+fn socket_path() -> PathBuf {
+    let runtime_dir = env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(runtime_dir).join("launcher.sock")
+}
 const FONT: Font = Font {
     family: Family::Name("Roboto"),
-    weight: Weight::Black,
+    weight: Weight::Medium,
     ..Font::DEFAULT
 };
+fn get_width() -> u16 {
+    // Query monitor and calculate golden ratio width
+    let output = Command::new("hyprctl")
+        .args(["monitors", "-j"])
+        .output()
+        .ok();
+
+    if let Some(output) = output {
+        if let Ok(monitors) = serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout) {
+            if let Some(mon) = monitors.first() {
+                let width = mon["width"].as_f64().unwrap_or(1920.0);
+                let scale = mon["scale"].as_f64().unwrap_or(1.0);
+                let logical_width = width / scale;
+                return (logical_width * 0.382) as u16; // 1 - φ
+            }
+        }
+    }
+    611 // fallback
+}
 
 fn main() -> iced::Result {
+    let width = get_width();
     let window_settings = window::Settings {
-        size: iced::Size::new(600.0, 50.0),
+        size: iced::Size::new(width as f32, 40.0),
         decorations: false,
         resizable: true,
         platform_specific: window::settings::PlatformSpecific {
@@ -100,6 +129,8 @@ struct App {
     matcher: SkimMatcherV2,
     visible: bool,
     icon_index: HashMap<String, PathBuf>,
+    wmclass_icons: HashMap<String, PathBuf>,
+    width: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +139,7 @@ enum Message {
     Submit,
     SelectNext,
     SelectPrev,
+    Select(usize),
     ClearQuery,
     DeleteWord,
     Hide,
@@ -118,13 +150,14 @@ enum Message {
 
 fn ipc_subscription() -> Subscription<Message> {
     Subscription::run(|| {
+        let path = socket_path();
         iced::stream::channel(100, |mut output| async move {
             use iced::futures::SinkExt;
 
             // Remove old socket
-            let _ = std::fs::remove_file(SOCKET_PATH);
+            let _ = fs::remove_file(&path);
 
-            let listener = match UnixListener::bind(SOCKET_PATH) {
+            let listener = match UnixListener::bind(&path) {
                 Ok(l) => l,
                 Err(e) => {
                     eprintln!("Failed to bind socket: {}", e);
@@ -167,7 +200,8 @@ fn ipc_subscription() -> Subscription<Message> {
 impl App {
     fn new() -> (Self, Task<Message>) {
         let icon_index = build_icon_index();
-        let entries = collect_entries(&icon_index);
+        let wmclass_icons = build_wmclass_icon_map(&icon_index);
+        let entries = collect_entries(&icon_index, &wmclass_icons);
         let filtered: Vec<usize> = (0..entries.len()).collect();
 
         // Start hidden in special workspace
@@ -187,6 +221,8 @@ impl App {
                 matcher: SkimMatcherV2::default(),
                 visible: false,
                 icon_index,
+                wmclass_icons,
+                width: get_width(),
             },
             Task::none(),
         )
@@ -267,6 +303,17 @@ impl App {
                 self.selected = self.selected.saturating_sub(1);
                 return self.scroll_to_visible(false);
             }
+            Message::Select(i) => {
+                if let Some(&idx) = self.filtered.get(i) {
+                    if let Some(entry) = self.entries.get(idx) {
+                        let _ = Command::new("hyprctl")
+                            .args(["dispatch", "togglespecialworkspace", "launcher"])
+                            .output();
+                        self.visible = false;
+                        activate(entry);
+                    }
+                }
+            }
             Message::ClearQuery => {
                 self.query.clear();
                 self.filter();
@@ -315,7 +362,7 @@ impl App {
     fn show(&mut self) -> Task<Message> {
         self.visible = true;
         self.query.clear();
-        self.entries = collect_entries(&self.icon_index);
+        self.entries = collect_entries(&self.icon_index, &self.wmclass_icons);
         self.filter();
         self.selected = 0;
         Task::batch([
@@ -326,35 +373,61 @@ impl App {
     }
 
     fn resize_to_fit(&self) -> Task<Message> {
-        let row_height = 40;
-        let input_height = 50;
-        let max_visible = 12;
+        let icon_container_size = ICON_SIZE + 4;
+        let row_height = (icon_container_size + ROW_PADDING * 2) as usize;
+        let max_visible = 10;
         let num_results = self.filtered.len().min(max_visible);
-        let height = input_height + (num_results * row_height);
+        let height = (row_height + (num_results * row_height)) as i32;
+
+        // Resize window
         let _ = Command::new("hyprctl")
-            .args(["dispatch", "resizewindowpixel", &format!("exact 600 {},class:launcher", height)])
+            .args(["dispatch", "resizewindowpixel", &format!("exact {} {},class:launcher", self.width, height)])
             .output();
+
+        // Position: centered horizontally, golden ratio vertically
+        if let Some(output) = Command::new("hyprctl").args(["monitors", "-j"]).output().ok() {
+            if let Ok(monitors) = serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout) {
+                if let Some(mon) = monitors.first() {
+                    let mon_width = mon["width"].as_f64().unwrap_or(1920.0);
+                    let mon_height = mon["height"].as_f64().unwrap_or(1080.0);
+                    let scale = mon["scale"].as_f64().unwrap_or(1.0);
+                    let logical_w = mon_width / scale;
+                    let logical_h = mon_height / scale;
+
+                    let x = ((logical_w - self.width as f64) / 2.0) as i32;
+                    let y = ((logical_h * 0.382) - (height as f64 / 2.0)) as i32;
+
+                    let _ = Command::new("hyprctl")
+                        .args(["dispatch", "movewindowpixel", &format!("exact {} {},class:launcher", x, y)])
+                        .output();
+                }
+            }
+        }
         Task::none()
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let input = text_input("Search...", &self.query)
+        let input_field = text_input("Search...", &self.query)
             .id(text_input::Id::new("search"))
             .on_input(Message::QueryChanged)
-            .padding(8)
-            .size(18)
+            .padding([ROW_PADDING, 8])
+            .size(TEXT_SIZE)
+            .line_height(text::LineHeight::Absolute((ICON_SIZE + ROW_PADDING).into()))
             .style(|_theme, _status| text_input::Style {
-                background: iced::Background::Color(iced::Color::from_rgb(0.12, 0.12, 0.12)),
-                border: iced::Border {
-                    color: iced::Color::TRANSPARENT,
-                    width: 0.0,
-                    radius: 0.0.into(),
-                },
-                icon: iced::Color::from_rgb(0.6, 0.6, 0.6),
+                background: iced::Background::Color(iced::Color::TRANSPARENT),
+                border: iced::Border::default(),
+                icon: iced::Color::from_rgb(0.5, 0.5, 0.5),
                 placeholder: iced::Color::from_rgb(0.4, 0.4, 0.4),
-                value: iced::Color::from_rgb(0.9, 0.9, 0.9),
+                value: iced::Color::from_rgb(0.85, 0.85, 0.85),
                 selection: iced::Color::from_rgba(0.3, 0.5, 0.8, 0.3),
             });
+
+        let divider: Element<Message> = container(iced::widget::Space::new(Length::Fill, 1))
+            .style(|_theme| container::Style {
+                background: Some(iced::Background::Color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.1))),
+                ..Default::default()
+            })
+            .into();
 
         let results: Column<Message> = self
             .filtered
@@ -365,49 +438,25 @@ impl App {
                 let entry = &self.entries[idx];
                 let selected = i == self.selected;
 
-                let prefix = if entry.is_window() { "● " } else { "" };
                 let name = entry.name();
 
-                // Build highlighted text with spans
                 let base_color = if selected {
                     iced::Color::from_rgb(0.9, 0.9, 0.9)
                 } else {
                     iced::Color::from_rgb(0.6, 0.6, 0.6)
                 };
-                let highlight_color = iced::Color::from_rgb(1.0, 0.8, 0.2);
 
-                // Re-match against name to get correct indices
-                let match_indices: Vec<usize> = if !self.query.is_empty() {
-                    self.matcher.fuzzy_indices(name, &self.query)
-                        .map(|(_, indices)| indices)
-                        .unwrap_or_default()
-                } else {
-                    vec![]
-                };
+                // Use ellipsized text with proper truncation
+                let label: Element<Message> = ellipsized_text(name)
+                    .size(16)
+                    .color(base_color)
+                    .font(FONT)
+                    .into();
 
-                let mut spans = vec![span(prefix).color(base_color)];
-                let chars: Vec<char> = name.chars().collect();
-                let mut last_end = 0;
-
-                for match_idx in match_indices {
-                    if match_idx > last_end {
-                        let s: String = chars[last_end..match_idx].iter().collect();
-                        spans.push(span(s).color(base_color));
-                    }
-                    if match_idx < chars.len() {
-                        spans.push(span(chars[match_idx].to_string()).color(highlight_color).font(iced::Font { weight: Weight::Bold, ..FONT }));
-                        last_end = match_idx + 1;
-                    }
-                }
-                if last_end < chars.len() {
-                    let s: String = chars[last_end..].iter().collect();
-                    spans.push(span(s).color(base_color));
-                }
-
-                let label = rich_text(spans).size(18);
-
-                // Always use row with icon placeholder for alignment
-                let icon_element: Element<Message> = if let Some(icon_path) = entry.icon() {
+                // Icon in circular container with subtle fill
+                let icon_container_size = ICON_SIZE + 4;
+                let is_window = entry.is_window();
+                let icon_inner: Element<Message> = if let Some(icon_path) = entry.icon() {
                     image(icon_path.clone())
                         .width(ICON_SIZE)
                         .height(ICON_SIZE)
@@ -415,21 +464,43 @@ impl App {
                 } else {
                     iced::widget::Space::new(ICON_SIZE, ICON_SIZE).into()
                 };
+                let icon_element: Element<Message> = container(icon_inner)
+                    .width(icon_container_size)
+                    .height(icon_container_size)
+                    .center_x(icon_container_size)
+                    .center_y(icon_container_size)
+                    .style(move |_theme| container::Style {
+                        background: Some(iced::Background::Color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.05))),
+                        border: iced::Border {
+                            radius: (icon_container_size as f32 / 2.0).into(),
+                            width: if is_window { 1.5 } else { 0.0 },
+                            color: iced::Color::from_rgb(0.4, 0.65, 0.85),
+                        },
+                        ..Default::default()
+                    })
+                    .into();
 
                 let content: Element<Message> = row![icon_element, label]
-                    .spacing(8)
+                    .spacing(6)
                     .align_y(iced::Alignment::Center)
                     .into();
 
-                col.push(
-                    container(content)
-                        .padding(6)
-                        .width(Length::Fill)
-                        .style(if selected {
-                            container::dark
+                let row_container = container(content)
+                    .padding([ROW_PADDING, ROW_PADDING])
+                    .width(Length::Fill)
+                    .style(move |_theme| container::Style {
+                        background: if selected {
+                            Some(iced::Background::Color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.1)))
                         } else {
-                            container::transparent
-                        }),
+                            None
+                        },
+                        ..Default::default()
+                    });
+
+                col.push(
+                    mouse_area(row_container)
+                        .on_press(Message::Select(i))
+                        .interaction(iced::mouse::Interaction::Pointer)
                 )
             });
 
@@ -458,19 +529,24 @@ impl App {
             });
 
         let content: Element<Message> = if self.filtered.is_empty() {
-            column![input].spacing(0).into()
+            column![input_field].spacing(0).into()
         } else {
-            column![input, scroll_area].spacing(0).into()
+            column![input_field, divider, scroll_area].spacing(0).into()
         };
 
         container(content)
-            .width(600)
+            .width(self.width)
+            .style(|_theme| container::Style {
+                background: Some(iced::Background::Color(iced::Color::from_rgb(0.08, 0.08, 0.08))),
+                ..Default::default()
+            })
             .into()
     }
 
     fn scroll_to_visible(&self, going_down: bool) -> Task<Message> {
-        let row_height = 40.0;
-        let visible_rows = 8;
+        let icon_container_size = ICON_SIZE + 4;
+        let row_height = (icon_container_size + ROW_PADDING * 2) as f32;
+        let visible_rows = 10;
 
         let offset = if going_down {
             if self.selected >= visible_rows {
@@ -535,8 +611,8 @@ fn activate(entry: &Entry) {
     }
 }
 
-fn collect_entries(icon_index: &HashMap<String, PathBuf>) -> Vec<Entry> {
-    let mut entries = collect_hyprland_windows(icon_index);
+fn collect_entries(icon_index: &HashMap<String, PathBuf>, wmclass_icons: &HashMap<String, PathBuf>) -> Vec<Entry> {
+    let mut entries = collect_hyprland_windows(icon_index, wmclass_icons);
     entries.extend(collect_desktop_entries(icon_index));
     entries
 }
@@ -550,7 +626,41 @@ struct HyprClient {
     focus_history_id: i32,
 }
 
-fn collect_hyprland_windows(icon_index: &HashMap<String, PathBuf>) -> Vec<Entry> {
+fn build_wmclass_icon_map(icon_index: &HashMap<String, PathBuf>) -> HashMap<String, PathBuf> {
+    let mut map = HashMap::new();
+
+    for dir in get_applications_dirs() {
+        if let Ok(read_dir) = fs::read_dir(&dir) {
+            for entry in read_dir.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "desktop") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        let mut wmclass = None;
+                        let mut icon_name = None;
+
+                        for line in content.lines() {
+                            if let Some(v) = line.strip_prefix("StartupWMClass=") {
+                                wmclass = Some(v.to_lowercase());
+                            } else if let Some(v) = line.strip_prefix("Icon=") {
+                                icon_name = Some(v.to_string());
+                            }
+                        }
+
+                        if let (Some(wm), Some(icon)) = (wmclass, icon_name) {
+                            if let Some(icon_path) = icon_index.get(&icon) {
+                                map.entry(wm).or_insert_with(|| icon_path.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    map
+}
+
+fn collect_hyprland_windows(icon_index: &HashMap<String, PathBuf>, wmclass_icons: &HashMap<String, PathBuf>) -> Vec<Entry> {
     let output = Command::new("hyprctl")
         .args(["clients", "-j"])
         .output()
@@ -568,7 +678,10 @@ fn collect_hyprland_windows(icon_index: &HashMap<String, PathBuf>) -> Vec<Entry>
         .into_iter()
         .filter(|c| !c.class.is_empty() && c.class != "launcher")
         .map(|c| {
-            let icon = icon_index.get(&c.class.to_lowercase()).cloned();
+            let class_lower = c.class.to_lowercase();
+            let icon = wmclass_icons.get(&class_lower)
+                .or_else(|| icon_index.get(&class_lower))
+                .cloned();
             Entry::Window {
                 title: c.title,
                 class: c.class,

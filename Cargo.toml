@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced = { version = "0.13", features = ["image", "tokio"] }
+iced = { version = "0.13", features = ["image", "tokio", "advanced"] }
 tokio = { version = "1", features = ["time"] }
 fuzzy-matcher = "0.3"
 serde = { version = "1", features = ["derive"] }
