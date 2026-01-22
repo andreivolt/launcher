@@ -1,8 +1,11 @@
 mod ellipsized_text;
+mod frecency;
 
 use ellipsized_text::ellipsized_text;
-use fuzzy_matcher::skim::SkimMatcherV2;
-use fuzzy_matcher::FuzzyMatcher;
+use frecency::Frecency;
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
+use strsim::jaro_winkler;
 use iced::font::{Family, Weight};
 use iced::keyboard::{key::Named, Key};
 use iced::widget::{column, container, image, mouse_area, row, scrollable, text, text_input, Column};
@@ -122,6 +125,20 @@ impl Entry {
     fn is_window(&self) -> bool {
         matches!(self, Entry::Window { .. })
     }
+
+    fn frecency_key(&self) -> String {
+        match self {
+            Entry::Desktop { desktop_file, action, .. } => {
+                let base = desktop_file.to_string_lossy().to_string();
+                if let Some(act) = action {
+                    format!("{}#{}", base, act)
+                } else {
+                    base
+                }
+            }
+            Entry::Window { class, .. } => format!("window:{}", class),
+        }
+    }
 }
 
 struct App {
@@ -129,11 +146,12 @@ struct App {
     entries: Vec<Entry>,
     filtered: Vec<usize>,
     selected: usize,
-    matcher: SkimMatcherV2,
+    matcher: Matcher,
     visible: bool,
     icon_index: HashMap<String, PathBuf>,
     wmclass_icons: HashMap<String, PathBuf>,
     width: u16,
+    frecency: Frecency,
 }
 
 #[derive(Debug, Clone)]
@@ -221,11 +239,12 @@ impl App {
                 entries,
                 filtered,
                 selected: 0,
-                matcher: SkimMatcherV2::default(),
+                matcher: Matcher::new(Config::DEFAULT),
                 visible: false,
                 icon_index,
                 wmclass_icons,
                 width: get_width(),
+                frecency: Frecency::load(),
             },
             Task::none(),
         )
@@ -291,6 +310,7 @@ impl App {
                             .args(["dispatch", "togglespecialworkspace", "launcher"])
                             .output();
                         self.visible = false;
+                        self.frecency.record(&entry.frecency_key());
                         activate(entry);
                     }
                 }
@@ -313,6 +333,7 @@ impl App {
                             .args(["dispatch", "togglespecialworkspace", "launcher"])
                             .output();
                         self.visible = false;
+                        self.frecency.record(&entry.frecency_key());
                         activate(entry);
                     }
                 }
@@ -570,19 +591,45 @@ impl App {
 
     fn filter(&mut self) {
         if self.query.is_empty() {
-            self.filtered = (0..self.entries.len()).collect();
+            // Sort by frecency when no query
+            let mut scored: Vec<_> = self.entries.iter().enumerate()
+                .map(|(idx, e)| (self.frecency.score(&e.frecency_key()), idx))
+                .collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0));
+            self.filtered = scored.into_iter().map(|(_, idx)| idx).collect();
         } else {
+            let pattern = Pattern::parse(&self.query, CaseMatching::Ignore, Normalization::Smart);
+            let query_lower = self.query.to_lowercase();
             let mut scored: Vec<_> = self
                 .entries
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, e)| {
-                    let best_score = e
+                    // Try nucleo (subsequence matching)
+                    let nucleo_score: u32 = e
                         .searchable()
                         .iter()
-                        .filter_map(|s| self.matcher.fuzzy_match(s, &self.query))
-                        .max()?;
-                    Some((best_score, idx))
+                        .filter_map(|s| {
+                            let mut buf = Vec::new();
+                            let haystack = Utf32Str::new(s, &mut buf);
+                            pattern.score(haystack, &mut self.matcher)
+                        })
+                        .max()
+                        .unwrap_or(0);
+
+                    // Try jaro-winkler (typo tolerance)
+                    let jw_score: u32 = e
+                        .searchable()
+                        .iter()
+                        .map(|s| (jaro_winkler(&query_lower, &s.to_lowercase()) * 1000.0) as u32)
+                        .max()
+                        .unwrap_or(0);
+
+                    // Combine: best match score + frecency boost
+                    let match_score = nucleo_score.max(jw_score);
+                    let frecency_boost = self.frecency.score(&e.frecency_key());
+                    let total = match_score + frecency_boost;
+                    if match_score > 500 { Some((total, idx)) } else { None }
                 })
                 .collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0));
@@ -594,36 +641,50 @@ impl App {
 fn activate(entry: &Entry) {
     match entry {
         Entry::Desktop { desktop_file, action, exec, terminal, .. } => {
-            // Actions always use gio launch (even for terminal apps like ghostty)
-            // Terminal=true without action means run the Exec line in a terminal
-            if *terminal && action.is_none() {
-                // Terminal apps without action: use $TERMINAL
-                if let Some(exec_line) = exec {
-                    let cmd_str: String = exec_line
-                        .split_whitespace()
-                        .filter(|s| !s.starts_with('%'))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    let term = env::var("TERMINAL").unwrap_or_else(|_| "kitty".to_string());
-                    let _ = Command::new(&term)
-                        .args(["-e", "sh", "-c", &cmd_str])
+            // Get the exec line - either from action or main entry
+            let exec_to_run = if let Some(action_id) = action {
+                get_action_exec(desktop_file, action_id).or_else(|| exec.clone())
+            } else {
+                exec.clone()
+            };
+
+            if let Some(exec_line) = exec_to_run {
+                // Parse exec line, removing field codes (%u, %F, etc.)
+                let cmd_str: String = exec_line
+                    .split_whitespace()
+                    .filter(|s| !s.starts_with('%'))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                // Parse command into binary + args
+                let mut cmd_parts = cmd_str.split_whitespace();
+                let Some(bin) = cmd_parts.next() else { return };
+                let args: Vec<&str> = cmd_parts.collect();
+
+                if *terminal && action.is_none() {
+                    // Terminal apps: parse TERMINAL (may have args like "kitty --single-instance")
+                    let term = env::var("TERMINAL").expect("TERMINAL env var must be set");
+                    let mut term_parts = term.split_whitespace();
+                    let term_bin = term_parts.next().unwrap();
+                    let term_args: Vec<&str> = term_parts.collect();
+                    let _ = Command::new(term_bin)
+                        .args(&term_args)
+                        .arg("-e")
+                        .arg(bin)
+                        .args(&args)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                } else {
+                    // GUI apps: direct exec
+                    let _ = Command::new(bin)
+                        .args(&args)
                         .stdin(std::process::Stdio::null())
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .spawn();
                 }
-            } else {
-                // GUI apps or actions: use gio launch
-                let mut cmd = Command::new("gio");
-                cmd.arg("launch");
-                if let Some(action_id) = action {
-                    cmd.arg(format!("--action={}", action_id));
-                }
-                cmd.arg(desktop_file);
-                cmd.stdin(std::process::Stdio::null())
-                   .stdout(std::process::Stdio::null())
-                   .stderr(std::process::Stdio::null());
-                let _ = cmd.spawn();
             }
         }
         Entry::Window { address, .. } => {
@@ -632,6 +693,26 @@ fn activate(entry: &Entry) {
                 .output();
         }
     }
+}
+
+fn get_action_exec(desktop_file: &PathBuf, action_id: &str) -> Option<String> {
+    let content = fs::read_to_string(desktop_file).ok()?;
+    let target_section = format!("[Desktop Action {}]", action_id);
+    let mut in_target_section = false;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_target_section = line == target_section;
+            continue;
+        }
+        if in_target_section {
+            if let Some(exec) = line.strip_prefix("Exec=") {
+                return Some(exec.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn collect_entries(icon_index: &HashMap<String, PathBuf>, wmclass_icons: &HashMap<String, PathBuf>) -> Vec<Entry> {

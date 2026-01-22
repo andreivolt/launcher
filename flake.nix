@@ -98,12 +98,20 @@
               wantedBy = [ "hyprland-session.target" ];
               partOf = [ "hyprland-session.target" ];
               after = [ "hyprland-session.target" ];
-              path = [ pkgs.hyprland pkgs.util-linux pkgs.glib ];
+              path = [ pkgs.hyprland pkgs.util-linux pkgs.glib pkgs.xdg-terminal-exec ];
+              environment = {
+                GIO_EXTRA_MODULES = "${pkgs.dconf.lib}/lib/gio/modules:${pkgs.glib-networking}/lib/gio/modules";
+                # Add user profile paths so spawned apps can be found
+                # %u = username, %h = home directory (systemd specifiers)
+                PATH = lib.mkForce "/run/current-system/sw/bin:/etc/profiles/per-user/%u/bin:%h/.nix-profile/bin:%h/.local/bin:${pkgs.hyprland}/bin:${pkgs.xdg-terminal-exec}/bin";
+                # Fallback terminal - PassEnvironment overrides if TERMINAL is in session
+                TERMINAL = "kitty";
+              };
               serviceConfig = {
                 ExecStart = "${launcherPkg}/bin/launcher";
                 Restart = "on-failure";
                 RestartSec = 2;
-                PassEnvironment = "HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR WAYLAND_DISPLAY TERMINAL XDG_DATA_DIRS GIO_EXTRA_MODULES DBUS_SESSION_BUS_ADDRESS";
+                PassEnvironment = "HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR WAYLAND_DISPLAY TERMINAL XDG_DATA_DIRS DBUS_SESSION_BUS_ADDRESS HOME";
               };
             };
           };
