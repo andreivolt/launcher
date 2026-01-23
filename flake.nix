@@ -62,7 +62,7 @@
             buildInputs = buildInputs ++ (with pkgs; [
               rustToolchain
               pkg-config
-              roboto
+              ibm-plex
               bacon
               cargo-watch
               process-compose

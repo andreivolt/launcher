@@ -33,7 +33,7 @@ fn socket_path() -> PathBuf {
     PathBuf::from(runtime_dir).join("launcher.sock")
 }
 const FONT: Font = Font {
-    family: Family::Name("Roboto"),
+    family: Family::Name("IBM Plex Sans"),
     weight: Weight::Medium,
     ..Font::DEFAULT
 };
@@ -59,9 +59,8 @@ fn get_width() -> u16 {
 
 fn main() -> iced::Result {
     env_logger::init();
-    let width = get_width();
     let window_settings = window::Settings {
-        size: iced::Size::new(width as f32, 40.0),
+        size: iced::Size::new(800.0, 600.0), // Will be fullscreened by hyprland
         decorations: false,
         resizable: true,
         transparent: true,
@@ -76,7 +75,7 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .theme(|_| Theme::Dark)
         .style(|_state, _theme| Appearance {
-            background_color: Color::from_rgba(0.0, 0.0, 0.0, 0.85),
+            background_color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
             text_color: Color::WHITE,
         })
         .default_font(FONT)
@@ -237,14 +236,6 @@ impl App {
         let entries = collect_entries(&icon_index, &wmclass_icons);
         let filtered: Vec<usize> = (0..entries.len()).collect();
 
-        // Start hidden in special workspace
-        std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            let _ = Command::new("hyprctl")
-                .args(["dispatch", "movetoworkspacesilent", "special:launcher,class:launcher"])
-                .output();
-        });
-
         (
             Self {
                 query: String::new(),
@@ -252,13 +243,13 @@ impl App {
                 filtered,
                 selected: 0,
                 matcher: Matcher::new(Config::DEFAULT),
-                visible: false,
+                visible: true,
                 icon_index,
                 wmclass_icons,
                 width: get_width(),
                 frecency: Frecency::load(),
             },
-            Task::none(),
+            text_input::focus(text_input::Id::new("search")),
         )
     }
 
@@ -293,7 +284,7 @@ impl App {
                     }
                 }
                 Event::Window(WindowEvent::CloseRequested) => Some(Message::Hide),
-                Event::Window(WindowEvent::Unfocused) => Some(Message::Reset),
+                Event::Window(WindowEvent::Unfocused) => None,
                 Event::Window(WindowEvent::Focused) => Some(Message::Show),
                 _ => None,
             }
@@ -303,29 +294,34 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        eprintln!("MSG: {:?}, visible: {}", message, self.visible);
         match message {
             Message::Reset => {
-                self.visible = false;
-                self.query.clear();
-                self.selected = 0;
-                return Task::none();
+                // Unfocused - hide (click outside closes overlay)
+                eprintln!("Reset triggered - hiding");
+                return self.hide();
             }
             Message::QueryChanged(query) => {
                 self.query = query;
                 self.filter();
                 self.selected = 0;
-                return self.resize_to_fit();
             }
             Message::Submit => {
+                if !self.visible {
+                    return Task::none();
+                }
                 if let Some(&idx) = self.filtered.get(self.selected) {
                     if let Some(entry) = self.entries.get(idx) {
-                        // Close special workspace first so new app opens on main workspace
+                        self.frecency.record(&entry.frecency_key());
+                        // Hide special workspace FIRST so app opens on main workspace
                         let _ = Command::new("hyprctl")
                             .args(["dispatch", "togglespecialworkspace", "launcher"])
                             .output();
                         self.visible = false;
-                        self.frecency.record(&entry.frecency_key());
+                        self.query.clear();
+                        self.selected = 0;
                         activate(entry);
+                        return Task::none();
                     }
                 }
             }
@@ -341,14 +337,21 @@ impl App {
                 return self.scroll_to_visible(false);
             }
             Message::Select(i) => {
+                if !self.visible {
+                    return Task::none();
+                }
                 if let Some(&idx) = self.filtered.get(i) {
                     if let Some(entry) = self.entries.get(idx) {
+                        self.frecency.record(&entry.frecency_key());
+                        // Hide special workspace FIRST so app opens on main workspace
                         let _ = Command::new("hyprctl")
                             .args(["dispatch", "togglespecialworkspace", "launcher"])
                             .output();
                         self.visible = false;
-                        self.frecency.record(&entry.frecency_key());
+                        self.query.clear();
+                        self.selected = 0;
                         activate(entry);
+                        return Task::none();
                     }
                 }
             }
@@ -356,7 +359,6 @@ impl App {
                 self.query.clear();
                 self.filter();
                 self.selected = 0;
-                return self.resize_to_fit();
             }
             Message::DeleteWord => {
                 // Delete last word (from end to previous space/start)
@@ -368,7 +370,6 @@ impl App {
                 }
                 self.filter();
                 self.selected = 0;
-                return self.resize_to_fit();
             }
             Message::TabComplete => {
                 // Complete to top match if it starts with query
@@ -378,10 +379,7 @@ impl App {
                         self.query = name.to_string();
                         self.filter();
                         self.selected = 0;
-                        return Task::batch([
-                            self.resize_to_fit(),
-                            text_input::move_cursor_to_end(text_input::Id::new("search")),
-                        ]);
+                        return text_input::move_cursor_to_end(text_input::Id::new("search"));
                     }
                 }
             }
@@ -409,6 +407,7 @@ impl App {
         self.visible = false;
         self.query.clear();
         self.selected = 0;
+        // Toggle special workspace OFF (hides it)
         let _ = Command::new("hyprctl")
             .args(["dispatch", "togglespecialworkspace", "launcher"])
             .output();
@@ -421,61 +420,14 @@ impl App {
         self.entries = collect_entries(&self.icon_index, &self.wmclass_icons);
         self.filter();
         self.selected = 0;
+        // Just focus input - hyprland handles showing the workspace
         Task::batch([
             text_input::focus(text_input::Id::new("search")),
             scrollable::scroll_to(scrollable::Id::new("results"), scrollable::AbsoluteOffset { x: 0.0, y: 0.0 }),
-            self.resize_to_fit(),
         ])
     }
 
-    fn resize_to_fit(&self) -> Task<Message> {
-        let input_height = (INPUT_SIZE + INPUT_PADDING * 2.0) as usize;
-        let icon_container_size = ICON_SIZE + 4;
-        let row_height = (icon_container_size + ROW_PADDING * 2) as usize;
-        let max_visible = 10;
-        let num_results = self.filtered.len().min(max_visible);
-        let divider_height = 1;
-
-        let height = if num_results == 0 && !self.query.is_empty() {
-            // "No matches" state: input + divider + no matches text
-            (input_height + divider_height + row_height) as i32
-        } else if num_results == 0 {
-            // Empty query: just input
-            input_height as i32
-        } else {
-            // Results: input + divider + results
-            (input_height + divider_height + num_results * row_height) as i32
-        };
-
-        // Resize window
-        let _ = Command::new("hyprctl")
-            .args(["dispatch", "resizewindowpixel", &format!("exact {} {},class:launcher", self.width, height)])
-            .output();
-
-        // Position: centered horizontally, golden ratio vertically
-        if let Some(output) = Command::new("hyprctl").args(["monitors", "-j"]).output().ok() {
-            if let Ok(monitors) = serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout) {
-                if let Some(mon) = monitors.first() {
-                    let mon_width = mon["width"].as_f64().unwrap_or(1920.0);
-                    let mon_height = mon["height"].as_f64().unwrap_or(1080.0);
-                    let scale = mon["scale"].as_f64().unwrap_or(1.0);
-                    let logical_w = mon_width / scale;
-                    let logical_h = mon_height / scale;
-
-                    let x = ((logical_w - self.width as f64) / 2.0) as i32;
-                    let y = ((logical_h * 0.382) - (height as f64 / 2.0)) as i32;
-
-                    let _ = Command::new("hyprctl")
-                        .args(["dispatch", "movewindowpixel", &format!("exact {} {},class:launcher", x, y)])
-                        .output();
-                }
-            }
-        }
-        Task::none()
-    }
-
     fn view(&self) -> Element<'_, Message> {
-        let input_height = INPUT_SIZE + INPUT_PADDING * 2.0;
 
         // Ghost text: show when top result starts with query
         let ghost_completion = if !self.query.is_empty() {
@@ -493,10 +445,10 @@ impl App {
             None
         };
 
-        let input_field = text_input("Search...", &self.query)
+        let input_field = text_input("", &self.query)
             .id(text_input::Id::new("search"))
             .on_input(Message::QueryChanged)
-            .padding([INPUT_PADDING as u16, INPUT_PADDING as u16])
+            .padding(Padding { top: INPUT_PADDING, right: INPUT_PADDING, bottom: INPUT_PADDING, left: 0.0 })
             .size(INPUT_SIZE)
             .width(Length::Fill)
             .line_height(text::LineHeight::Absolute(INPUT_SIZE.into()))
@@ -531,17 +483,34 @@ impl App {
                     iced::Color::TRANSPARENT
                 })
         ]
-        .padding([INPUT_PADDING as u16, INPUT_PADDING as u16])
+        .padding(Padding { top: INPUT_PADDING, right: INPUT_PADDING, bottom: INPUT_PADDING, left: 0.0 })
+        .into();
+
+        // Prompt character
+        let prompt: Element<Message> = container(
+            text(">")
+                .size(INPUT_SIZE)
+                .font(FONT)
+                .line_height(text::LineHeight::Absolute(INPUT_SIZE.into()))
+                .color(iced::Color::from_rgb(0.4, 0.4, 0.4))
+        )
+        .padding(Padding { top: INPUT_PADDING, right: 8.0, bottom: INPUT_PADDING, left: INPUT_PADDING })
         .into();
 
         // Stack: ghost behind (first), input on top (second)
-        let input_area: Element<Message> = stack![ghost_layer, input_field]
+        let input_row: Element<Message> = row![prompt, stack![ghost_layer, input_field].width(Length::Fill)]
             .width(Length::Fill)
             .into();
 
-        let divider: Element<Message> = container(iced::widget::Space::new(Length::Fill, 1))
+        // Input area with background
+        let input_area: Element<Message> = container(input_row)
+            .width(Length::Fill)
             .style(|_theme| container::Style {
-                background: Some(iced::Background::Color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.1))),
+                background: Some(iced::Background::Color(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.85))),
+                border: iced::Border {
+                    radius: 3.0.into(),
+                    ..Default::default()
+                },
                 ..Default::default()
             })
             .into();
@@ -659,16 +628,25 @@ impl App {
                 )
                 .padding([ROW_PADDING, INPUT_PADDING as u16])
                 .width(Length::Fill);
-                column![input_area, divider, no_matches].spacing(0).into()
+                column![input_area, no_matches].spacing(0).into()
             }
         } else {
-            column![input_area, divider, scroll_area].spacing(0).into()
+            column![input_area, scroll_area].spacing(0).into()
         };
 
-        container(content)
-            .width(self.width)
+        // Launcher panel with content
+        let panel = container(content)
+            .width(self.width);
+
+        // Fullscreen container that centers the panel at golden ratio
+        container(panel)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Top)
+            .padding(Padding { top: 200.0, ..Padding::ZERO }) // Approximate golden ratio from top
             .style(|_theme| container::Style {
-                background: None,  // Let window background show through
+                background: None,
                 ..Default::default()
             })
             .into()
