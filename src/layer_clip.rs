@@ -2,9 +2,10 @@
 
 mod common;
 
-use common::{colors, handle_navigation_keys, render_row, truncate};
+use common::{colors, handle_navigation_keys, truncate};
 use common::{INPUT_PADDING, INPUT_SIZE, MAX_VISIBLE_ITEMS, ROW_HEIGHT, TEXT_SIZE};
 use eframe::egui::{self, CentralPanel, Context, Frame, Color32, RichText, ScrollArea, FontFamily, FontId, Ui};
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
 use std::collections::HashMap;
 use std::io::Write as IoWrite;
@@ -29,11 +30,14 @@ struct App {
     should_hide: bool,
     loaded: bool,
     held_key: Option<(egui::Key, std::time::Instant)>,
+    needs_reload: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    _watcher: Option<RecommendedWatcher>,
 }
 
 impl App {
     fn new() -> Self {
         let re = Regex::new(r"\[\[\s*binary data\s+[\d.]+\s*\w+\s+(\w+)\s+(\d+)x(\d+)\s*\]\]").unwrap();
+
         Self {
             query: String::new(),
             entries: Vec::new(),
@@ -44,6 +48,54 @@ impl App {
             should_hide: false,
             loaded: false,
             held_key: None,
+            needs_reload: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            _watcher: None,
+        }
+    }
+
+    fn setup_watcher(&mut self, ctx: &Context) {
+        use std::sync::atomic::Ordering;
+
+        // Watch the directory, not the file (cliphist does atomic writes via rename)
+        let db_dir = std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join(".cache/cliphist"))
+            .unwrap_or_else(|_| PathBuf::from("/tmp/cliphist"));
+
+        let needs_reload = self.needs_reload.clone();
+        let ctx = ctx.clone();
+
+        if let Ok(mut watcher) = RecommendedWatcher::new(
+            move |res: Result<notify::Event, notify::Error>| {
+                if let Ok(event) = res {
+                    // Only reload on modifications to 'db' file
+                    let dominated_db = event.paths.iter().any(|p| {
+                        p.file_name().is_some_and(|n| n == "db")
+                    });
+                    if dominated_db {
+                        needs_reload.store(true, Ordering::SeqCst);
+                        ctx.request_repaint();
+                    }
+                }
+            },
+            Config::default(),
+        ) {
+            if db_dir.exists() {
+                let _ = watcher.watch(&db_dir, RecursiveMode::NonRecursive);
+            }
+            self._watcher = Some(watcher);
+        }
+    }
+
+    fn ensure_texture(&mut self, ctx: &Context, idx: usize) {
+        let e = &self.entries[idx];
+        if e.is_image && e.texture.is_none() {
+            if let Some(caps) = self.re.captures(&e.id) {
+                let fmt = caps.get(1).map(|m| m.as_str().to_lowercase()).unwrap_or("png".into());
+                if let Some(tex) = decode_image(ctx, &e.id, &fmt, idx) {
+                    self.textures.insert(e.id.clone(), tex.clone());
+                    self.entries[idx].texture = Some(tex);
+                }
+            }
         }
     }
 
@@ -133,16 +185,21 @@ impl App {
         if activate { self.activate(); return; }
         if delete { self.delete(ctx); }
 
+        // Ensure texture is loaded for selected image (lazy loading)
+        if let Some(&idx) = self.filtered.get(self.selected) {
+            self.ensure_texture(ctx, idx);
+        }
+
         CentralPanel::default()
             .frame(Frame::NONE)
             .show(ctx, |ui: &mut Ui| {
                 let screen = ui.available_rect_before_wrap();
-                let content_width = screen.width();
+                let total_width = screen.width();
                 let font_id = FontId::new(INPUT_SIZE, FontFamily::Proportional);
 
                 ui.add_space(4.0);
 
-                // Input row
+                // Input row (full width)
                 ui.horizontal(|ui: &mut Ui| {
                     ui.add_space(INPUT_PADDING);
 
@@ -157,7 +214,7 @@ impl App {
                         .text_color(colors::TEXT_PRIMARY)
                         .hint_text(RichText::new("Search clipboard...").color(colors::TEXT_MUTED))
                         .frame(false)
-                        .desired_width(content_width - INPUT_PADDING * 3.0 - 30.0);
+                        .desired_width(total_width * 0.5 - INPUT_PADDING * 2.0);
                     let r = ui.add(input);
                     r.request_focus();
                     if self.query != old_query { self.filter(); }
@@ -165,93 +222,100 @@ impl App {
 
                 ui.add_space(8.0);
 
-                // List area (top half)
-                let list_height = MAX_VISIBLE_ITEMS as f32 * ROW_HEIGHT;
+                // Main content: list on left, preview on right
+                let list_height = screen.height() - INPUT_SIZE - INPUT_PADDING * 2.0 - 20.0;
                 let scroll_to_selected = down || up;
 
-                ScrollArea::vertical()
-                    .max_height(list_height)
-                    .show(ui, |ui: &mut Ui| {
-                        let mut clicked = None;
+                // Use columns for side-by-side layout
+                ui.columns(2, |cols| {
+                    // Left column: scrollable list
+                    let list_ui = &mut cols[0];
+                    ScrollArea::vertical()
+                        .id_salt("clip_list")
+                        .max_height(list_height)
+                        .show(list_ui, |ui: &mut Ui| {
+                            let mut clicked = None;
+                            let col_width = ui.available_width();
 
-                        for (i, &idx) in self.filtered.iter().enumerate() {
-                            let e = &self.entries[idx];
+                            for (i, &idx) in self.filtered.iter().enumerate() {
+                                let e = &self.entries[idx];
+                                let is_selected = i == self.selected;
 
-                            // Use shared row rendering
-                            let (row_rect, _, was_clicked) = render_row(
-                                ui, i, self.selected, scroll_to_selected,
-                                ROW_HEIGHT, content_width,
-                            );
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(col_width, ROW_HEIGHT),
+                                    egui::Sense::click(),
+                                );
 
-                            let text_color = if i == self.selected {
-                                colors::TEXT_PRIMARY
-                            } else {
-                                colors::TEXT_SECONDARY
-                            };
+                                if is_selected {
+                                    ui.painter().rect_filled(rect, 0.0, colors::BG_SELECTED);
+                                    if scroll_to_selected {
+                                        ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                                    }
+                                }
 
-                            // Row content
-                            let text_x = INPUT_PADDING;
-                            let text_y = row_rect.min.y + (ROW_HEIGHT - TEXT_SIZE) / 2.0;
+                                let text_color = if is_selected {
+                                    colors::TEXT_PRIMARY
+                                } else {
+                                    colors::TEXT_SECONDARY
+                                };
 
-                            let display_text = if e.is_image {
-                                e.dims.map(|(w, h)| format!("[image {}x{}]", w, h))
-                                    .unwrap_or_else(|| "[image]".into())
-                            } else {
-                                truncate(&e.text, 80)
-                            };
+                                let display_text = if e.is_image {
+                                    e.dims.map(|(w, h)| format!("[img {}x{}]", w, h))
+                                        .unwrap_or_else(|| "[image]".into())
+                                } else {
+                                    truncate(&e.text, 45)
+                                };
 
-                            ui.painter().text(
-                                egui::pos2(text_x, text_y),
-                                egui::Align2::LEFT_TOP,
-                                &display_text,
-                                FontId::new(TEXT_SIZE, FontFamily::Proportional),
-                                text_color,
-                            );
+                                let text_pos = egui::pos2(
+                                    rect.min.x + INPUT_PADDING,
+                                    rect.min.y + (ROW_HEIGHT - TEXT_SIZE) / 2.0,
+                                );
+                                ui.painter().text(
+                                    text_pos,
+                                    egui::Align2::LEFT_TOP,
+                                    &display_text,
+                                    FontId::new(TEXT_SIZE, FontFamily::Proportional),
+                                    text_color,
+                                );
 
-                            if was_clicked {
-                                clicked = Some(i);
+                                if response.clicked() {
+                                    clicked = Some(i);
+                                }
                             }
-                        }
 
-                        if let Some(i) = clicked {
-                            self.selected = i;
-                            self.activate();
-                        }
-                    });
+                            if let Some(i) = clicked {
+                                self.selected = i;
+                                self.activate();
+                            }
+                        });
 
-                ui.add_space(8.0);
-
-                // Preview area (bottom half)
-                let preview_height = screen.height() - list_height - 80.0;
-                if preview_height > 50.0 {
+                    // Right column: preview
+                    let preview_ui = &mut cols[1];
                     if let Some(&idx) = self.filtered.get(self.selected) {
                         let e = &self.entries[idx];
 
                         if e.is_image {
                             if let Some(tex) = &e.texture {
-                                let max_w = content_width - INPUT_PADDING * 2.0;
-                                let max_h = preview_height - 16.0;
-                                ui.horizontal(|ui: &mut Ui| {
-                                    ui.add_space(INPUT_PADDING);
-                                    ui.add(egui::Image::new(tex)
-                                        .max_size(egui::vec2(max_w, max_h))
-                                        .corner_radius(6.0));
-                                });
+                                let max_w = preview_ui.available_width() - 16.0;
+                                let max_h = list_height - 16.0;
+                                preview_ui.add(egui::Image::new(tex)
+                                    .max_size(egui::vec2(max_w, max_h))
+                                    .corner_radius(6.0));
                             }
                         } else {
                             ScrollArea::vertical()
-                                .max_height(preview_height)
-                                .show(ui, |ui: &mut Ui| {
-                                    ui.horizontal(|ui: &mut Ui| {
-                                        ui.add_space(INPUT_PADDING);
-                                        ui.label(RichText::new(&e.text)
+                                .id_salt("clip_preview")
+                                .max_height(list_height)
+                                .show(preview_ui, |ui: &mut Ui| {
+                                    ui.add(egui::Label::new(
+                                        RichText::new(&e.text)
                                             .color(colors::TEXT_SECONDARY)
-                                            .size(13.0));
-                                    });
+                                            .size(13.0)
+                                    ).wrap());
                                 });
                         }
                     }
-                }
+                });
             });
     }
 }
@@ -262,6 +326,18 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
+        use std::sync::atomic::Ordering;
+
+        // Set up watcher on first update (need Context)
+        if self._watcher.is_none() {
+            self.setup_watcher(ctx);
+        }
+
+        // Check for file change events
+        if self.needs_reload.swap(false, Ordering::SeqCst) {
+            self.load_entries(ctx);
+        }
+
         if !self.loaded {
             self.load_entries(ctx);
         }
@@ -296,21 +372,20 @@ fn main() -> eframe::Result<()> {
 }
 
 fn get_clip_size() -> (f32, f32) {
-    let row_height = ROW_HEIGHT;
     let input_height = INPUT_SIZE + INPUT_PADDING * 2.0;
-    let list_height = MAX_VISIBLE_ITEMS as f32 * row_height;
-    let preview_height = 200.0;  // Fixed preview height
-    let height = input_height + list_height + preview_height + 32.0;
+    let list_height = MAX_VISIBLE_ITEMS as f32 * ROW_HEIGHT;
+    let height = input_height + list_height + 24.0;
 
+    // Wider window for side-by-side layout (golden ratio inverse ~0.618)
     let (width, scale) = Command::new("hyprctl").args(["monitors", "-j"]).output().ok()
         .and_then(|o| serde_json::from_slice::<Vec<serde_json::Value>>(&o.stdout).ok())
         .and_then(|m| m.first().and_then(|m| {
             let w = m["width"].as_f64()?;
             let s = m["scale"].as_f64().unwrap_or(1.0);
             let logical_w = w / s;
-            Some(((logical_w * 0.382 / s) as f32, s))
+            Some(((logical_w * 0.618 / s) as f32, s))
         }))
-        .unwrap_or((300.0, 1.0));
+        .unwrap_or((500.0, 1.0));
 
     (width, height / scale as f32)
 }
