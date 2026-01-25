@@ -560,8 +560,8 @@ fn get_launcher_size() -> (f32, f32) {
         .and_then(|m| m.first().and_then(|m| {
             let w = m["width"].as_f64()?;
             let s = m["scale"].as_f64().unwrap_or(1.0);
-            // Golden ratio: 38.2% of logical screen width (eframe applies scaling)
-            Some((w / s * 0.382) as f32)
+            // eframe applies 2x scaling, so: logical_target / 2
+            Some((w / s * 0.382 / 2.0) as f32)
         }))
         .unwrap_or(300.0);
 
