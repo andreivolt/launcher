@@ -385,7 +385,8 @@ fn get_clip_size() -> (f32, f32) {
             let w = m["width"].as_f64()?;
             let s = m["scale"].as_f64().unwrap_or(1.0);
             let logical_w = w / s;
-            Some((logical_w * 0.618) as f32)
+            // Golden ratio: width = 61.8% of screen (divide by scale for eframe)
+            Some((logical_w * 0.618 / s) as f32)
         }))
         .unwrap_or(500.0);
 
