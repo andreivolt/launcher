@@ -354,13 +354,13 @@ fn main() -> eframe::Result<()> {
     let (width, height) = get_clip_size();
 
     eframe::run_native(
-        "clip-layer",
+        "clipboard",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([width, height])
                 .with_decorations(false)
                 .with_transparent(true)
-                .with_app_id("clip-layer"),
+                .with_app_id("clipboard"),
             ..Default::default()
         },
         Box::new(|cc| {
@@ -394,7 +394,7 @@ fn get_clip_size() -> (f32, f32) {
 
 fn temp_dir() -> PathBuf {
     let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or("/tmp".into());
-    PathBuf::from(runtime).join("clip-layer-cache")
+    PathBuf::from(runtime).join("clipboard-cache")
 }
 
 fn collect(ctx: &Context, re: &Regex, textures: &mut HashMap<String, egui::TextureHandle>) -> Vec<Entry> {

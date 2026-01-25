@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "launcher-layer"
-path = "src/layer_launcher.rs"
+name = "launcher"
+path = "src/launcher.rs"
 
 [[bin]]
-name = "clip-layer"
-path = "src/layer_clip.rs"
+name = "clipboard"
+path = "src/clipboard.rs"
 
 [dependencies]
 wayapp = { path = "vendor/wayapp" }

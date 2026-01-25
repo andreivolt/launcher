@@ -49,7 +49,7 @@
 
             postInstall = ''
               # Wrap both binaries with library paths
-              for bin in launcher-layer clip-layer; do
+              for bin in launcher clipboard; do
                 wrapProgram $out/bin/$bin \
                   --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [
                     pkgs.wayland
@@ -96,7 +96,7 @@
           config = lib.mkIf cfg.enable {
             environment.systemPackages = [ launcherPkg ];
 
-            systemd.user.services.launcher-layer = {
+            systemd.user.services.launcher = {
               description = "Launcher (eframe)";
               wantedBy = [ "hyprland-session.target" ];
               partOf = [ "hyprland-session.target" ];
@@ -108,21 +108,21 @@
                 TERMINAL = "kitty";
               };
               serviceConfig = {
-                ExecStart = "${launcherPkg}/bin/launcher-layer";
+                ExecStart = "${launcherPkg}/bin/launcher";
                 Restart = "on-failure";
                 RestartSec = 2;
                 PassEnvironment = "HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR WAYLAND_DISPLAY TERMINAL XDG_DATA_DIRS DBUS_SESSION_BUS_ADDRESS HOME";
               };
             };
 
-            systemd.user.services.clip-layer = {
+            systemd.user.services.clipboard = {
               description = "Clipboard (eframe)";
               wantedBy = [ "hyprland-session.target" ];
               partOf = [ "hyprland-session.target" ];
               after = [ "hyprland-session.target" ];
               path = [ pkgs.hyprland pkgs.cliphist pkgs.wl-clipboard ];
               serviceConfig = {
-                ExecStart = "${launcherPkg}/bin/clip-layer";
+                ExecStart = "${launcherPkg}/bin/clipboard";
                 Restart = "on-failure";
                 RestartSec = 2;
                 PassEnvironment = "HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR WAYLAND_DISPLAY XDG_DATA_HOME HOME";

@@ -123,6 +123,7 @@ struct App {
     filtered: Vec<usize>,
     selected: usize,
     should_hide: bool,
+    activated_window: bool, // Skip toggle when switching to a window (focuswindow already hides)
     loaded: bool,
     // Key repeat state
     held_key: Option<(egui::Key, std::time::Instant)>,
@@ -138,6 +139,7 @@ impl App {
             filtered: Vec::new(),
             selected: 0,
             should_hide: false,
+            activated_window: false,
             loaded: false,
             held_key: None,
             matcher: Matcher::new(Config::DEFAULT),
@@ -253,6 +255,7 @@ impl App {
                     let _ = Command::new("hyprctl")
                         .args(["dispatch", "focuswindow", &format!("address:{}", address)])
                         .output();
+                    self.activated_window = true;
                 }
             }
         }
@@ -265,10 +268,13 @@ impl App {
         self.selected = 0;
         self.filtered = (0..self.entries.len().min(50)).collect();
         self.should_hide = false;
-        // Toggle special workspace to hide
-        let _ = Command::new("hyprctl")
-            .args(["dispatch", "togglespecialworkspace", "launcher"])
-            .spawn();
+        // Toggle special workspace to hide (skip if window was focused - focuswindow already hides)
+        if !self.activated_window {
+            let _ = Command::new("hyprctl")
+                .args(["dispatch", "togglespecialworkspace", "launcher"])
+                .spawn();
+        }
+        self.activated_window = false;
     }
 
     fn render(&mut self, ctx: &Context) {
@@ -530,13 +536,13 @@ fn main() -> eframe::Result<()> {
     let (width, height) = get_launcher_size();
 
     eframe::run_native(
-        "launcher-layer",
+        "launcher",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([width, height])
                 .with_decorations(false)
                 .with_transparent(true)
-                .with_app_id("launcher-layer"),
+                .with_app_id("launcher"),
             ..Default::default()
         },
         Box::new(|cc| {
@@ -712,7 +718,7 @@ fn collect_hyprland_windows(ctx: &Context, icon_index: &HashMap<String, PathBuf>
 
     clients
         .into_iter()
-        .filter(|c| !c.class.is_empty() && c.class != "launcher" && c.class != "launcher-layer")
+        .filter(|c| !c.class.is_empty() && c.class != "launcher" && c.class != "launcher")
         .filter(|c| !c.workspace.name.starts_with("special:"))
         .map(|c| {
             let class_lower = c.class.to_lowercase();
