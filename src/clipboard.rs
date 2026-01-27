@@ -7,7 +7,7 @@ use launcher::hyprland;
 use eframe::egui::{self, CentralPanel, Context, Color32, RichText, ScrollArea, FontFamily, FontId, Ui};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as IoWrite;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -15,6 +15,7 @@ use std::process::{Command, Stdio};
 struct Entry {
     id: String,
     text: String,
+    full_text: Option<String>,
     is_image: bool,
     dims: Option<(u32, u32)>,
     texture: Option<egui::TextureHandle>,
@@ -27,6 +28,7 @@ struct App {
     selected: usize,
     re: Regex,
     textures: HashMap<String, egui::TextureHandle>,
+    failed_textures: HashSet<usize>,
     should_hide: bool,
     loaded: bool,
     held_key: Option<(egui::Key, std::time::Instant)>,
@@ -46,6 +48,7 @@ impl App {
             selected: 0,
             re,
             textures: HashMap::new(),
+            failed_textures: HashSet::new(),
             should_hide: false,
             loaded: false,
             held_key: None,
@@ -86,21 +89,45 @@ impl App {
         }
     }
 
+    fn ensure_full_text(&mut self, idx: usize) {
+        let e = &self.entries[idx];
+        if !e.is_image && e.full_text.is_none() {
+            if let Ok(mut p) = Command::new("cliphist").arg("decode")
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()
+            {
+                if let Some(mut stdin) = p.stdin.take() {
+                    let _ = stdin.write_all(e.id.as_bytes());
+                }
+                if let Ok(out) = p.wait_with_output() {
+                    if out.status.success() {
+                        self.entries[idx].full_text =
+                            Some(String::from_utf8_lossy(&out.stdout).into_owned());
+                    }
+                }
+            }
+        }
+    }
+
     fn ensure_texture(&mut self, ctx: &Context, idx: usize) {
         let e = &self.entries[idx];
-        if e.is_image && e.texture.is_none() {
+        if e.is_image && e.texture.is_none() && !self.failed_textures.contains(&idx) {
             if let Some(caps) = self.re.captures(&e.id) {
                 let fmt = caps.get(1).map(|m| m.as_str().to_lowercase()).unwrap_or("png".into());
                 if let Some(tex) = decode_image(ctx, &e.id, &fmt, idx) {
                     self.textures.insert(e.id.clone(), tex.clone());
                     self.entries[idx].texture = Some(tex);
+                } else {
+                    self.failed_textures.insert(idx);
                 }
+            } else {
+                self.failed_textures.insert(idx);
             }
         }
     }
 
     fn load_entries(&mut self, ctx: &Context) {
         let old_selected = self.selected;
+        self.failed_textures.clear();
         self.entries = collect(ctx, &self.re, &mut self.textures);
         self.filter();
         self.selected = old_selected.min(self.filtered.len().saturating_sub(1));
@@ -181,8 +208,10 @@ impl App {
         if activate { self.activate(); return; }
         if delete { self.delete(ctx); }
 
+        // Ensure texture + full text for selected entry
         if let Some(&idx) = self.filtered.get(self.selected) {
             self.ensure_texture(ctx, idx);
+            self.ensure_full_text(idx);
         }
 
         CentralPanel::default()
@@ -209,48 +238,88 @@ impl App {
                 let list_height = screen.max.y - ui.cursor().min.y;
                 let scroll_to_selected = down || up;
 
-                ui.columns(2, |cols| {
-                    let list_ui = &mut cols[0];
-                    ScrollArea::vertical()
-                        .id_salt("clip_list")
-                        .max_height(list_height)
-                        .show(list_ui, |ui: &mut Ui| {
-                            let mut clip = ui.clip_rect();
-                            clip.min.y = clip.min.y.max(separator_y);
-                            ui.set_clip_rect(clip);
+                ScrollArea::vertical()
+                    .id_salt("clip_list")
+                    .max_height(list_height)
+                    .show(ui, |ui: &mut Ui| {
+                        let mut clip = ui.clip_rect();
+                        clip.min.y = clip.min.y.max(separator_y);
+                        ui.set_clip_rect(clip);
 
-                            let mut clicked = None;
-                            let col_width = ui.available_width();
+                        let mut clicked = None;
+                        let col_width = ui.available_width();
+                        let mut selected_rect: Option<egui::Rect> = None;
 
-                            for (i, &idx) in self.filtered.iter().enumerate() {
-                                let e = &self.entries[idx];
-                                let is_selected = i == self.selected;
+                        for (i, &idx) in self.filtered.iter().enumerate() {
+                            let e = &self.entries[idx];
+                            let is_selected = i == self.selected;
 
-                                let (rect, response) = ui.allocate_exact_size(
-                                    egui::vec2(col_width, ROW_HEIGHT),
-                                    egui::Sense::click(),
-                                );
+                            let (rect, response) = ui.allocate_exact_size(
+                                egui::vec2(col_width, ROW_HEIGHT),
+                                egui::Sense::click(),
+                            );
 
-                                if is_selected {
-                                    ui.painter().rect_filled(rect, 0.0, colors::BG_SELECTED);
-                                    if scroll_to_selected {
-                                        ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                                    }
+                            if is_selected {
+                                ui.painter().rect_filled(rect, 0.0, colors::BG_SELECTED);
+                                if scroll_to_selected {
+                                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
                                 }
+                                selected_rect = Some(rect);
+                            }
 
-                                let text_color = if is_selected {
-                                    colors::TEXT_PRIMARY
+                            let text_color = if is_selected {
+                                colors::TEXT_PRIMARY
+                            } else {
+                                colors::TEXT_SECONDARY
+                            };
+
+                            // For image entries with a texture, show inline thumbnail
+                            if e.is_image {
+                                if let Some(tex) = &e.texture {
+                                    let tex_size = tex.size_vec2();
+                                    let thumb_h = ROW_HEIGHT - 4.0;
+                                    let thumb_w = thumb_h * (tex_size.x / tex_size.y);
+                                    let thumb_rect = egui::Rect::from_min_size(
+                                        egui::pos2(rect.min.x + 8.0, rect.min.y + 2.0),
+                                        egui::vec2(thumb_w, thumb_h),
+                                    );
+                                    ui.painter().image(
+                                        tex.id(),
+                                        thumb_rect,
+                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                        egui::Color32::WHITE,
+                                    );
+
+                                    let display_text = e.dims.map(|(w, h)| format!("{}x{}", w, h))
+                                        .unwrap_or_else(|| "image".into());
+                                    let text_pos = egui::pos2(
+                                        rect.min.x + 8.0 + thumb_w + 8.0,
+                                        rect.min.y + (ROW_HEIGHT - TEXT_SIZE) / 2.0,
+                                    );
+                                    ui.painter().text(
+                                        text_pos,
+                                        egui::Align2::LEFT_TOP,
+                                        &display_text,
+                                        FontId::new(TEXT_SIZE, FontFamily::Proportional),
+                                        text_color,
+                                    );
                                 } else {
-                                    colors::TEXT_SECONDARY
-                                };
-
-                                let display_text = if e.is_image {
-                                    e.dims.map(|(w, h)| format!("[img {}x{}]", w, h))
-                                        .unwrap_or_else(|| "[image]".into())
-                                } else {
-                                    truncate(&e.text, 45)
-                                };
-
+                                    let display_text = e.dims.map(|(w, h)| format!("[img {}x{}]", w, h))
+                                        .unwrap_or_else(|| "[image]".into());
+                                    let text_pos = egui::pos2(
+                                        rect.min.x + 12.0,
+                                        rect.min.y + (ROW_HEIGHT - TEXT_SIZE) / 2.0,
+                                    );
+                                    ui.painter().text(
+                                        text_pos,
+                                        egui::Align2::LEFT_TOP,
+                                        &display_text,
+                                        FontId::new(TEXT_SIZE, FontFamily::Proportional),
+                                        text_color,
+                                    );
+                                }
+                            } else {
+                                let display_text = truncate(&e.text, 80);
                                 let text_pos = egui::pos2(
                                     rect.min.x + 12.0,
                                     rect.min.y + (ROW_HEIGHT - TEXT_SIZE) / 2.0,
@@ -262,46 +331,104 @@ impl App {
                                     FontId::new(TEXT_SIZE, FontFamily::Proportional),
                                     text_color,
                                 );
-
-                                if response.clicked() {
-                                    clicked = Some(i);
-                                }
                             }
 
-                            if let Some(i) = clicked {
-                                self.selected = i;
-                                self.activate();
+                            if response.clicked() {
+                                clicked = Some(i);
                             }
-                        });
+                        }
 
-                    let preview_ui = &mut cols[1];
-                    if let Some(&idx) = self.filtered.get(self.selected) {
-                        let e = &self.entries[idx];
+                        // Paint accordion expansion overlay (content-sized, capped)
+                        if let (Some(sel_rect), Some(&sel_idx)) = (selected_rect, self.filtered.get(self.selected)) {
+                            let e = &self.entries[sel_idx];
+                            let corner = 6.0;
+                            let max_content_h = ROW_HEIGHT * 8.0;
+                            // Text x/y must match row layout: 12px left indent, vertically centered
+                            let text_x = sel_rect.min.x + 12.0;
+                            let text_y = sel_rect.min.y + (ROW_HEIGHT - TEXT_SIZE) / 2.0;
+                            let text_w = col_width - 24.0;
+                            let pad_bottom = 10.0;
+                            let bg = egui::Color32::from_rgb(22, 22, 22);
 
-                        common::preview_frame().show(preview_ui, |ui: &mut Ui| {
+                            // Measure natural content height
+                            let (natural_h, text_galley) = if e.is_image {
+                                let h = if let Some(tex) = &e.texture {
+                                    let ts = tex.size_vec2();
+                                    let scale = (text_w / ts.x).min(max_content_h / ts.y).min(1.0);
+                                    ts.y * scale
+                                } else { 0.0 };
+                                (h, None)
+                            } else {
+                                let display = e.full_text.as_deref().unwrap_or(&e.text);
+                                let galley = ui.painter().layout(
+                                    display.to_owned(),
+                                    FontId::new(TEXT_SIZE, FontFamily::Proportional),
+                                    colors::TEXT_PRIMARY,
+                                    text_w,
+                                );
+                                let h = galley.size().y;
+                                (h, Some(galley))
+                            };
+
+                            let content_h = natural_h.min(max_content_h);
+                            let overlay_h = (text_y - sel_rect.min.y) + content_h + pad_bottom;
+
+                            let overlay_rect = egui::Rect::from_min_size(
+                                egui::pos2(sel_rect.min.x, sel_rect.min.y),
+                                egui::vec2(col_width, overlay_h),
+                            );
+
+                            // Soft shadow below overlay
+                            for i in 0..6u8 {
+                                let alpha = 30u8.saturating_sub(i * 5);
+                                let y = overlay_rect.max.y + i as f32;
+                                ui.painter().hline(
+                                    overlay_rect.min.x..=overlay_rect.max.x,
+                                    y,
+                                    egui::Stroke::new(1.0, egui::Color32::from_black_alpha(alpha)),
+                                );
+                            }
+
+                            ui.painter().rect_filled(overlay_rect, corner, bg);
+                            // Subtle border
+                            ui.painter().rect_stroke(
+                                overlay_rect,
+                                corner,
+                                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(12)),
+                                egui::StrokeKind::Inside,
+                            );
+
+                            let clip_rect = egui::Rect::from_min_max(
+                                egui::pos2(text_x, text_y),
+                                egui::pos2(text_x + text_w, overlay_rect.max.y - pad_bottom),
+                            );
+                            let painter = ui.painter().with_clip_rect(clip_rect);
+
                             if e.is_image {
                                 if let Some(tex) = &e.texture {
-                                    let max_w = ui.available_width();
-                                    let max_h = list_height - 20.0;
-                                    ui.add(egui::Image::new(tex)
-                                        .max_size(egui::vec2(max_w, max_h))
-                                        .corner_radius(6.0));
+                                    let ts = tex.size_vec2();
+                                    let scale = (text_w / ts.x).min(content_h / ts.y).min(1.0);
+                                    let img_rect = egui::Rect::from_min_size(
+                                        egui::pos2(text_x, text_y),
+                                        egui::vec2(ts.x * scale, ts.y * scale),
+                                    );
+                                    painter.image(
+                                        tex.id(),
+                                        img_rect,
+                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                        egui::Color32::WHITE,
+                                    );
                                 }
-                            } else {
-                                ScrollArea::vertical()
-                                    .id_salt("clip_preview")
-                                    .max_height(list_height - 20.0)
-                                    .show(ui, |ui: &mut Ui| {
-                                        ui.add(egui::Label::new(
-                                            RichText::new(&e.text)
-                                                .color(colors::TEXT_PRIMARY)
-                                                .size(TEXT_SIZE)
-                                        ).wrap());
-                                    });
+                            } else if let Some(galley) = text_galley {
+                                painter.galley(egui::pos2(text_x, text_y), galley, colors::TEXT_PRIMARY);
                             }
-                        });
-                    }
-                });
+                        }
+
+                        if let Some(i) = clicked {
+                            self.selected = i;
+                            self.activate();
+                        }
+                    });
 
                 common::paint_input_separator(ui, separator_y);
             });
@@ -346,7 +473,7 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result<()> {
-    let (width, height) = hyprland::window_size(0.618, 0.618, (500.0, 400.0));
+    let (width, height) = hyprland::window_size(0.382, 0.618, (300.0, 400.0));
 
     eframe::run_native(
         "clipboard",
@@ -400,11 +527,11 @@ fn collect(ctx: &Context, re: &Regex, textures: &mut HashMap<String, egui::Textu
                 })
             } else { None };
 
-            entries.push(Entry { id: line.into(), text: "[image]".into(), is_image: true, dims: w.zip(h), texture });
+            entries.push(Entry { id: line.into(), text: "[image]".into(), full_text: None, is_image: true, dims: w.zip(h), texture });
         } else {
             let text = line.split_once('\t').map(|(_, t)| t).unwrap_or(line).to_string();
             if !seen.insert(text.clone()) { continue; }
-            entries.push(Entry { id: line.into(), text, is_image: false, dims: None, texture: None });
+            entries.push(Entry { id: line.into(), text, full_text: None, is_image: false, dims: None, texture: None });
         }
     }
     entries
