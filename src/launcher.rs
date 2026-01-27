@@ -4,8 +4,12 @@ use eframe::egui::{self, CentralPanel, Context, Frame, Color32, RichText, Scroll
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{env, fs};
 use strsim::jaro_winkler;
 
@@ -123,12 +127,12 @@ struct App {
     filtered: Vec<usize>,
     selected: usize,
     should_hide: bool,
-    activated_window: bool, // Skip toggle when switching to a window (focuswindow already hides)
+    activated_window: bool,
     loaded: bool,
-    // Key repeat state
     held_key: Option<(egui::Key, std::time::Instant)>,
-    // Fuzzy matcher
     matcher: Matcher,
+    needs_reload: Arc<AtomicBool>,
+    _hypr_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl App {
@@ -143,18 +147,54 @@ impl App {
             loaded: false,
             held_key: None,
             matcher: Matcher::new(Config::DEFAULT),
+            needs_reload: Arc::new(AtomicBool::new(false)),
+            _hypr_thread: None,
         }
     }
 
+    fn setup_hyprland_events(&mut self, ctx: &Context) {
+        let sig = env::var("HYPRLAND_INSTANCE_SIGNATURE").ok();
+        let runtime = env::var("XDG_RUNTIME_DIR").unwrap_or("/tmp".into());
+        let socket_path = sig.map(|s| format!("{}/hypr/{}/.socket2.sock", runtime, s));
+        let Some(path) = socket_path else { return };
+
+        let needs_reload = self.needs_reload.clone();
+        let ctx = ctx.clone();
+
+        self._hypr_thread = Some(std::thread::spawn(move || {
+            loop {
+                let Ok(stream) = UnixStream::connect(&path) else {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    continue;
+                };
+                let reader = BufReader::new(stream);
+                for line in reader.lines() {
+                    let Ok(line) = line else { break };
+                    if line.starts_with("openwindow>>")
+                        || line.starts_with("closewindow>>")
+                        || line.starts_with("windowtitle>>")
+                        || line.starts_with("movewindow>>")
+                    {
+                        needs_reload.store(true, Ordering::SeqCst);
+                        ctx.request_repaint();
+                    }
+                }
+                // Socket closed, reconnect
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }));
+    }
+
     fn load_entries(&mut self, ctx: &Context) {
+        let old_selected = self.selected;
         let icon_index = build_icon_index();
         let wmclass_icons = build_wmclass_icon_map(&icon_index);
 
-        // Collect windows first, then desktop entries
         self.entries = collect_hyprland_windows(ctx, &icon_index, &wmclass_icons);
         self.entries.extend(collect_desktop_entries(ctx, &icon_index));
 
-        self.filtered = (0..self.entries.len().min(20)).collect();
+        self.filter();
+        self.selected = old_selected.min(self.filtered.len().saturating_sub(1));
         self.loaded = true;
     }
 
@@ -522,6 +562,14 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
+        if self._hypr_thread.is_none() {
+            self.setup_hyprland_events(ctx);
+        }
+
+        if self.needs_reload.swap(false, Ordering::SeqCst) {
+            self.load_entries(ctx);
+        }
+
         if !self.loaded {
             self.load_entries(ctx);
         }
