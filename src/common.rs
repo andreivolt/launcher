@@ -20,9 +20,9 @@ pub mod colors {
     pub const BG_BASE: Color32 = Color32::from_rgba_premultiplied(12, 12, 12, 200);
     pub const BG_INPUT: Color32 = Color32::from_rgb(5, 5, 5);
     pub const BG_SELECTED: Color32 = Color32::from_rgba_premultiplied(60, 100, 160, 50);
-    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(225, 225, 225);
-    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(140, 140, 140);
-    pub const TEXT_MUTED: Color32 = Color32::from_rgb(80, 80, 80);
+    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(240, 240, 240);
+    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(185, 185, 185);
+    pub const TEXT_MUTED: Color32 = Color32::from_rgb(95, 95, 95);
     pub const GHOST_TEXT: Color32 = Color32::from_rgba_premultiplied(120, 120, 120, 140);
     pub const ACCENT: Color32 = Color32::from_rgb(100, 160, 220);
 }
