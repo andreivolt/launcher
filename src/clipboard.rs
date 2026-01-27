@@ -1,6 +1,7 @@
 //! Clipboard manager using eframe (regular window in special workspace)
 
-use launcher::common::{colors, handle_navigation_keys, truncate, ScrollMomentum};
+use launcher::common::{colors, handle_navigation_keys, truncate};
+use launcher::scroll::ScrollMomentum;
 use launcher::common::{INPUT_PADDING, INPUT_SIZE, ROW_HEIGHT, TEXT_SIZE};
 use launcher::hyprland;
 use eframe::egui::{self, CentralPanel, Context, Frame, Color32, RichText, ScrollArea, FontFamily, FontId, Ui};

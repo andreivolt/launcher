@@ -1,7 +1,8 @@
 //! App launcher using eframe (regular window in special workspace)
 
 use eframe::egui::{self, CentralPanel, Context, Frame, Color32, RichText, ScrollArea, Sense, Ui, FontFamily, FontId, Stroke};
-use launcher::common::{colors, handle_navigation_keys, ScrollMomentum, TEXT_SIZE, INPUT_SIZE, INPUT_PADDING};
+use launcher::common::{colors, handle_navigation_keys, TEXT_SIZE, INPUT_SIZE, INPUT_PADDING};
+use launcher::scroll::ScrollMomentum;
 use launcher::{desktop, hyprland};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
