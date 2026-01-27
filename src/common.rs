@@ -24,6 +24,7 @@ pub mod colors {
     pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(185, 185, 185);
     pub const TEXT_MUTED: Color32 = Color32::from_rgb(95, 95, 95);
     pub const GHOST_TEXT: Color32 = Color32::from_rgba_premultiplied(120, 120, 120, 140);
+    pub const BG_PREVIEW: Color32 = Color32::from_rgba_premultiplied(18, 18, 18, 160);
     pub const ACCENT: Color32 = Color32::from_rgb(100, 160, 220);
 }
 
@@ -42,6 +43,16 @@ pub fn input_frame() -> Frame {
         corner_radius: egui::CornerRadius::same(6),
         inner_margin: egui::Margin::symmetric(12, 6),
         outer_margin: egui::Margin::same(6),
+        ..Frame::NONE
+    }
+}
+
+/// Preview pane frame with subtle background lift
+pub fn preview_frame() -> Frame {
+    Frame {
+        fill: colors::BG_PREVIEW,
+        corner_radius: egui::CornerRadius::same(6),
+        inner_margin: egui::Margin::same(10),
         ..Frame::NONE
     }
 }

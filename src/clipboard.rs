@@ -278,26 +278,28 @@ impl App {
                     if let Some(&idx) = self.filtered.get(self.selected) {
                         let e = &self.entries[idx];
 
-                        if e.is_image {
-                            if let Some(tex) = &e.texture {
-                                let max_w = preview_ui.available_width() - 16.0;
-                                let max_h = list_height - 16.0;
-                                preview_ui.add(egui::Image::new(tex)
-                                    .max_size(egui::vec2(max_w, max_h))
-                                    .corner_radius(6.0));
+                        common::preview_frame().show(preview_ui, |ui: &mut Ui| {
+                            if e.is_image {
+                                if let Some(tex) = &e.texture {
+                                    let max_w = ui.available_width();
+                                    let max_h = list_height - 20.0;
+                                    ui.add(egui::Image::new(tex)
+                                        .max_size(egui::vec2(max_w, max_h))
+                                        .corner_radius(6.0));
+                                }
+                            } else {
+                                ScrollArea::vertical()
+                                    .id_salt("clip_preview")
+                                    .max_height(list_height - 20.0)
+                                    .show(ui, |ui: &mut Ui| {
+                                        ui.add(egui::Label::new(
+                                            RichText::new(&e.text)
+                                                .color(colors::TEXT_PRIMARY)
+                                                .size(TEXT_SIZE)
+                                        ).wrap());
+                                    });
                             }
-                        } else {
-                            ScrollArea::vertical()
-                                .id_salt("clip_preview")
-                                .max_height(list_height)
-                                .show(preview_ui, |ui: &mut Ui| {
-                                    ui.add(egui::Label::new(
-                                        RichText::new(&e.text)
-                                            .color(colors::TEXT_SECONDARY)
-                                            .size(13.0)
-                                    ).wrap());
-                                });
-                        }
+                        });
                     }
                 });
 
