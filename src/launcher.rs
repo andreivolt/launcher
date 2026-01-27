@@ -357,6 +357,8 @@ impl App {
                     }
                 });
 
+                let separator_y = ui.cursor().min.y;
+
                 // Measure actual header height from rendered input section
                 let row_height = ICON_CONTAINER + ROW_PADDING * 2.0;
                 let header_height = ui.cursor().min.y;
@@ -386,6 +388,11 @@ impl App {
                 ScrollArea::vertical()
                     .max_height(visible_height)
                     .show(ui, |ui: &mut Ui| {
+                    // Clip scroll content below the input area
+                    let mut clip = ui.clip_rect();
+                    clip.min.y = clip.min.y.max(separator_y);
+                    ui.set_clip_rect(clip);
+
                     for (i, &idx) in self.filtered.iter().enumerate() {
                         let e = &self.entries[idx];
                         let sel = i == self.selected;
@@ -478,6 +485,8 @@ impl App {
                     self.selected = i;
                     self.activate();
                 }
+
+                common::paint_input_separator(ui, separator_y);
             });
     }
 }

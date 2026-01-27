@@ -46,6 +46,13 @@ pub fn input_frame() -> Frame {
     }
 }
 
+/// Thin separator line below the input area (call after scroll area to render on top)
+pub fn paint_input_separator(ui: &mut Ui, y: f32) {
+    let width = ui.available_width();
+    let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(8));
+    ui.painter().hline(0.0..=width, y, stroke);
+}
+
 /// Render a selectable row with automatic scroll-into-view
 /// Returns (row_rect, row_response, was_clicked)
 pub fn render_row(

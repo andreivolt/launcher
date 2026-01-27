@@ -204,6 +204,8 @@ impl App {
                     if self.query != old_query { self.filter(); }
                 });
 
+                let separator_y = ui.cursor().min.y;
+
                 let list_height = screen.max.y - ui.cursor().min.y;
                 let scroll_to_selected = down || up;
 
@@ -213,6 +215,10 @@ impl App {
                         .id_salt("clip_list")
                         .max_height(list_height)
                         .show(list_ui, |ui: &mut Ui| {
+                            let mut clip = ui.clip_rect();
+                            clip.min.y = clip.min.y.max(separator_y);
+                            ui.set_clip_rect(clip);
+
                             let mut clicked = None;
                             let col_width = ui.available_width();
 
@@ -294,6 +300,8 @@ impl App {
                         }
                     }
                 });
+
+                common::paint_input_separator(ui, separator_y);
             });
     }
 }
