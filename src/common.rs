@@ -93,6 +93,11 @@ pub fn handle_navigation_keys(
     let mut up = false;
     let now = std::time::Instant::now();
 
+    if !ctx.input(|i| i.focused) {
+        *held_key = None;
+        return (false, false);
+    }
+
     ctx.input(|i| {
         // Check for key releases
         for event in &i.events {

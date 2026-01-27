@@ -337,7 +337,7 @@ impl App {
                         .frame(false)
                         .desired_width(ui.available_width());
                     let output = input.show(ui);
-                    output.response.request_focus();
+                    if ui.ctx().input(|i| i.focused) { output.response.request_focus(); }
                     if self.query != old_query { self.filter(); }
 
                     if !ghost.is_empty() && !self.query.is_empty() {

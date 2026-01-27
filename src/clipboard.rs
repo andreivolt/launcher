@@ -200,7 +200,7 @@ impl App {
                         .frame(false)
                         .desired_width(ui.available_width());
                     let r = ui.add(input);
-                    r.request_focus();
+                    if ui.ctx().input(|i| i.focused) { r.request_focus(); }
                     if self.query != old_query { self.filter(); }
                 });
 
