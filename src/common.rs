@@ -40,8 +40,8 @@ pub fn input_frame() -> Frame {
     Frame {
         fill: colors::BG_INPUT,
         corner_radius: egui::CornerRadius::same(6),
-        inner_margin: egui::Margin::symmetric(12, 8),
-        outer_margin: egui::Margin::same(8),
+        inner_margin: egui::Margin::symmetric(12, 6),
+        outer_margin: egui::Margin::same(6),
         ..Frame::NONE
     }
 }
