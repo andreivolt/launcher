@@ -1,7 +1,7 @@
 //! App launcher using eframe (regular window in special workspace)
 
-use eframe::egui::{self, CentralPanel, Context, Frame, Color32, RichText, ScrollArea, Sense, Ui, FontFamily, FontId, Stroke};
-use launcher::common::{colors, handle_navigation_keys, TEXT_SIZE, INPUT_SIZE, INPUT_PADDING};
+use eframe::egui::{self, CentralPanel, Context, Color32, RichText, ScrollArea, Sense, Ui, FontFamily, FontId, Stroke};
+use launcher::common::{self, colors, handle_navigation_keys, TEXT_SIZE, INPUT_SIZE};
 use launcher::scroll::ScrollMomentum;
 use launcher::{desktop, hyprland};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
@@ -17,10 +17,9 @@ use strsim::jaro_winkler;
 // Launcher-specific layout
 const ICON_SIZE: f32 = 20.0;
 const ICON_CONTAINER: f32 = 24.0;
-const ROW_PADDING: f32 = 6.0;
+const ROW_PADDING: f32 = 4.0;
 const ICON_LABEL_SPACING: f32 = 8.0;
 const MAX_VISIBLE_ITEMS: usize = 15;
-const WS_INDICATOR_WIDTH: f32 = 28.0;
 
 fn truncate_to_width(ui: &Ui, s: &str, font: FontId, max_width: f32) -> String {
     let full = ui.painter().layout_no_wrap(s.to_string(), font.clone(), Color32::WHITE);
@@ -121,10 +120,15 @@ struct App {
     needs_reload: Arc<AtomicBool>,
     _hypr_thread: Option<std::thread::JoinHandle<()>>,
     scroll_momentum: ScrollMomentum,
+    max_size: (f32, f32),
+    last_height: f32,
 }
 
 impl App {
     fn new() -> Self {
+        let eframe_size = hyprland::window_size(0.382, 0.618, (300.0, 400.0));
+        // Store max size in hyprland logical coords (matches egui screen_rect)
+        let max_size = (eframe_size.0 * 2.0, eframe_size.1 * 2.0);
         Self {
             query: String::new(),
             entries: Vec::new(),
@@ -138,6 +142,8 @@ impl App {
             needs_reload: Arc::new(AtomicBool::new(false)),
             _hypr_thread: None,
             scroll_momentum: ScrollMomentum::new(),
+            max_size,
+            last_height: 0.0,
         }
     }
 
@@ -200,11 +206,19 @@ impl App {
                         0
                     };
 
-                    let prefix_bonus: u32 = if e.searchable().iter()
-                        .any(|s| s.to_lowercase().starts_with(&query_lower))
+                    let name_lower = e.name().to_lowercase();
+                    let prefix_bonus: u32 = if name_lower.starts_with(&query_lower)
                     { 10000 } else { 0 };
 
-                    let match_score = nucleo_score.max(jw_score) + prefix_bonus;
+                    let name_bonus: u32 = {
+                        let mut buf = Vec::new();
+                        let haystack = Utf32Str::new(e.name(), &mut buf);
+                        if pattern.score(haystack, &mut self.matcher).unwrap_or(0) > 0
+                            || name_lower.contains(&query_lower)
+                        { 5000 } else { 0 }
+                    };
+
+                    let match_score = nucleo_score.max(jw_score) + prefix_bonus + name_bonus;
                     if match_score == 0 { return None; }
                     Some((match_score, idx))
                 })
@@ -241,11 +255,8 @@ impl App {
                     if let Some((bin, args)) = parts.split_first() {
                         if *terminal {
                             let term = env::var("TERMINAL").unwrap_or("kitty".into());
-                            let mut term_parts = term.split_whitespace();
-                            let term_bin = term_parts.next().unwrap_or("kitty");
-                            let term_args: Vec<&str> = term_parts.collect();
+                            let term_bin = term.split_whitespace().next().unwrap_or("kitty");
                             let _ = Command::new(term_bin)
-                                .args(&term_args)
                                 .arg("-e")
                                 .arg(bin)
                                 .args(args)
@@ -308,10 +319,8 @@ impl App {
         if up { self.selected = self.selected.saturating_sub(1); }
         if activate { self.activate(); return; }
 
-        let row_height = ICON_CONTAINER + ROW_PADDING * 2.0;
-
         CentralPanel::default()
-            .frame(Frame::NONE)
+            .frame(common::panel_frame())
             .show(ctx, |ui: &mut Ui| {
                 let screen = ui.available_rect_before_wrap();
                 let content_width = screen.width();
@@ -319,51 +328,59 @@ impl App {
                 let font_id = FontId::new(INPUT_SIZE, FontFamily::Proportional);
                 let ghost = self.ghost_text();
 
-                ui.add_space(4.0);
-
-                ui.horizontal(|ui: &mut Ui| {
-                    ui.add_space(INPUT_PADDING);
-
-                    ui.label(RichText::new(">")
-                        .color(colors::TEXT_MUTED)
-                        .size(INPUT_SIZE));
-                    ui.add_space(8.0);
-
-                    let text_start = ui.cursor().min;
-
+                common::input_frame().show(ui, |ui: &mut Ui| {
                     let old_query = self.query.clone();
                     let input = egui::TextEdit::singleline(&mut self.query)
                         .font(font_id.clone())
                         .text_color(colors::TEXT_PRIMARY)
                         .hint_text(RichText::new("Search...").color(colors::TEXT_MUTED))
                         .frame(false)
-                        .desired_width(content_width - INPUT_PADDING * 3.0 - 30.0);
-                    let r = ui.add(input);
-                    r.request_focus();
+                        .desired_width(ui.available_width());
+                    let output = input.show(ui);
+                    output.response.request_focus();
                     if self.query != old_query { self.filter(); }
 
                     if !ghost.is_empty() && !self.query.is_empty() {
-                        let query_galley = ui.painter().layout_no_wrap(
-                            self.query.clone(),
-                            font_id.clone(),
-                            Color32::WHITE,
-                        );
-                        let ghost_x = text_start.x + query_galley.rect.width();
-                        let ghost_y = text_start.y;
-                        ui.painter().text(
-                            egui::pos2(ghost_x, ghost_y),
-                            egui::Align2::LEFT_TOP,
-                            &ghost,
+                        let mut job = egui::text::LayoutJob::default();
+                        job.append(&self.query, 0.0, egui::TextFormat {
+                            font_id: font_id.clone(),
+                            color: Color32::TRANSPARENT,
+                            ..Default::default()
+                        });
+                        job.append(&ghost, 0.0, egui::TextFormat {
                             font_id,
-                            colors::GHOST_TEXT,
-                        );
+                            color: colors::GHOST_TEXT,
+                            ..Default::default()
+                        });
+                        let galley = ui.fonts(|f| f.layout_job(job));
+                        ui.painter().galley(output.galley_pos, galley, Color32::TRANSPARENT);
                     }
                 });
 
-                ui.add_space(8.0);
+                // Measure actual header height from rendered input section
+                let row_height = ICON_CONTAINER + ROW_PADDING * 2.0;
+                let header_height = ui.cursor().min.y;
+                let spacing_y = ui.spacing().item_spacing.y;
+                let num_items = self.filtered.len().min(MAX_VISIBLE_ITEMS);
+                let list_height = if num_items > 0 {
+                    num_items as f32 * row_height + (num_items - 1) as f32 * spacing_y
+                } else {
+                    0.0
+                };
+                let desired_height = header_height + list_height;
+                let target_height = desired_height.min(self.max_size.1);
+                if (target_height - self.last_height).abs() > 1.0 {
+                    self.last_height = target_height;
+                    let w = self.max_size.0 as i32;
+                    let h = target_height as i32;
+                    hyprland::dispatch_async(
+                        "resizewindowpixel",
+                        &format!("exact {} {},class:launcher", w, h),
+                    );
+                }
 
                 let mut clicked = None;
-                let visible_height = MAX_VISIBLE_ITEMS as f32 * row_height;
+                let visible_height = (self.max_size.1 - header_height).max(row_height);
                 let scroll_to_selected = down || up;
 
                 ScrollArea::vertical()
@@ -425,7 +442,7 @@ impl App {
                         let text_y = row_y + (row_height - TEXT_SIZE) / 2.0;
                         let text_font = FontId::new(TEXT_SIZE, FontFamily::Proportional);
 
-                        let right_margin = if e.is_window() { WS_INDICATOR_WIDTH + ROW_PADDING * 2.0 } else { ROW_PADDING };
+                        let right_margin = if e.is_window() { ICON_CONTAINER + ROW_PADDING * 2.0 } else { ROW_PADDING };
                         let available_width = content_width - text_x - right_margin;
 
                         let display_name = truncate_to_width(ui, e.name(), text_font.clone(), available_width);
@@ -438,9 +455,13 @@ impl App {
                         );
 
                         if let Some(ws) = e.workspace() {
+                            let ws_center = egui::pos2(
+                                content_width - ROW_PADDING - ICON_CONTAINER / 2.0,
+                                row_y + row_height / 2.0,
+                            );
                             ui.painter().text(
-                                egui::pos2(content_width - ROW_PADDING, text_y),
-                                egui::Align2::RIGHT_TOP,
+                                ws_center,
+                                egui::Align2::CENTER_CENTER,
                                 ws,
                                 FontId::new(TEXT_SIZE * 0.85, FontFamily::Proportional),
                                 colors::TEXT_MUTED,

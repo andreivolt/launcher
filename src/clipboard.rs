@@ -1,10 +1,10 @@
 //! Clipboard manager using eframe (regular window in special workspace)
 
-use launcher::common::{colors, handle_navigation_keys, truncate};
+use launcher::common::{self, colors, handle_navigation_keys, truncate};
 use launcher::scroll::ScrollMomentum;
-use launcher::common::{INPUT_PADDING, INPUT_SIZE, ROW_HEIGHT, TEXT_SIZE};
+use launcher::common::{INPUT_SIZE, ROW_HEIGHT, TEXT_SIZE};
 use launcher::hyprland;
-use eframe::egui::{self, CentralPanel, Context, Frame, Color32, RichText, ScrollArea, FontFamily, FontId, Ui};
+use eframe::egui::{self, CentralPanel, Context, Color32, RichText, ScrollArea, FontFamily, FontId, Ui};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
 use std::collections::HashMap;
@@ -186,37 +186,25 @@ impl App {
         }
 
         CentralPanel::default()
-            .frame(Frame::NONE)
+            .frame(common::panel_frame())
             .show(ctx, |ui: &mut Ui| {
                 let screen = ui.available_rect_before_wrap();
-                let total_width = screen.width();
                 let font_id = FontId::new(INPUT_SIZE, FontFamily::Proportional);
 
-                ui.add_space(4.0);
-
-                ui.horizontal(|ui: &mut Ui| {
-                    ui.add_space(INPUT_PADDING);
-
-                    ui.label(RichText::new(">")
-                        .color(colors::TEXT_MUTED)
-                        .size(INPUT_SIZE));
-                    ui.add_space(8.0);
-
+                common::input_frame().show(ui, |ui: &mut Ui| {
                     let old_query = self.query.clone();
                     let input = egui::TextEdit::singleline(&mut self.query)
                         .font(font_id)
                         .text_color(colors::TEXT_PRIMARY)
                         .hint_text(RichText::new("Search clipboard...").color(colors::TEXT_MUTED))
                         .frame(false)
-                        .desired_width(total_width * 0.5 - INPUT_PADDING * 2.0);
+                        .desired_width(ui.available_width());
                     let r = ui.add(input);
                     r.request_focus();
                     if self.query != old_query { self.filter(); }
                 });
 
-                ui.add_space(8.0);
-
-                let list_height = screen.height() - INPUT_SIZE - INPUT_PADDING * 2.0 - 20.0;
+                let list_height = screen.max.y - ui.cursor().min.y;
                 let scroll_to_selected = down || up;
 
                 ui.columns(2, |cols| {
@@ -258,7 +246,7 @@ impl App {
                                 };
 
                                 let text_pos = egui::pos2(
-                                    rect.min.x + INPUT_PADDING,
+                                    rect.min.x + 12.0,
                                     rect.min.y + (ROW_HEIGHT - TEXT_SIZE) / 2.0,
                                 );
                                 ui.painter().text(

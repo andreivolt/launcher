@@ -35,8 +35,9 @@ pub fn monitor() -> Option<Monitor> {
     monitors.into_iter().next()
 }
 
-/// Calculate eframe window size for given width/height ratios.
-/// Accounts for eframe's 2x HiDPI scaling.
+/// Calculate eframe viewport-builder size for given width/height ratios.
+/// Divides by 2.0 because eframe applies internal 2x HiDPI scaling on Wayland.
+/// Note: egui's screen_rect/cursor coords match hyprland logical pixels (no /2).
 pub fn window_size(w_ratio: f32, h_ratio: f32, fallback: (f32, f32)) -> (f32, f32) {
     monitor()
         .map(|m| {

@@ -1,6 +1,6 @@
 //! Shared constants and utilities for launcher and clipboard
 
-use eframe::egui::{self, Sense, Ui};
+use eframe::egui::{self, Frame, Sense, Ui};
 
 // Layout constants - golden ratio based
 pub const GOLDEN: f32 = 1.618;
@@ -17,12 +17,33 @@ pub const REPEAT_INTERVAL_MS: u128 = 120;
 // Colors
 pub mod colors {
     use eframe::egui::Color32;
+    pub const BG_BASE: Color32 = Color32::from_rgba_premultiplied(12, 12, 12, 200);
+    pub const BG_INPUT: Color32 = Color32::from_rgb(5, 5, 5);
     pub const BG_SELECTED: Color32 = Color32::from_rgba_premultiplied(60, 100, 160, 50);
     pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(225, 225, 225);
     pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(140, 140, 140);
     pub const TEXT_MUTED: Color32 = Color32::from_rgb(80, 80, 80);
     pub const GHOST_TEXT: Color32 = Color32::from_rgba_premultiplied(120, 120, 120, 140);
     pub const ACCENT: Color32 = Color32::from_rgb(100, 160, 220);
+}
+
+/// Panel frame with semi-transparent dark background
+pub fn panel_frame() -> Frame {
+    Frame {
+        fill: colors::BG_BASE,
+        ..Frame::NONE
+    }
+}
+
+/// Input field frame with opaque dark background and rounded corners
+pub fn input_frame() -> Frame {
+    Frame {
+        fill: colors::BG_INPUT,
+        corner_radius: egui::CornerRadius::same(6),
+        inner_margin: egui::Margin::symmetric(12, 8),
+        outer_margin: egui::Margin::same(8),
+        ..Frame::NONE
+    }
 }
 
 /// Render a selectable row with automatic scroll-into-view
