@@ -1,6 +1,6 @@
 //! App launcher using eframe (regular window in special workspace)
 
-use eframe::egui::{self, CentralPanel, Context, Color32, RichText, ScrollArea, Ui, FontFamily, FontId, Stroke};
+use eframe::egui::{self, CentralPanel, Context, Color32, RichText, ScrollArea, Ui, FontFamily, FontId};
 use launcher::common::{self, colors, handle_navigation_keys, virtual_list, TEXT_SIZE, INPUT_SIZE};
 use launcher::scroll::ScrollMomentum;
 use launcher::{desktop, hyprland};
@@ -17,8 +17,8 @@ use strsim::jaro_winkler;
 // Launcher-specific layout
 const ICON_SIZE: f32 = TEXT_SIZE;
 const ICON_CONTAINER: f32 = TEXT_SIZE + 4.0;
-const ROW_PADDING: f32 = 4.0;
-const ICON_LABEL_SPACING: f32 = 8.0;
+const ROW_PADDING: f32 = 6.0;
+const ICON_LABEL_SPACING: f32 = 10.0;
 const MAX_VISIBLE_ITEMS: usize = 15;
 
 fn truncate_to_width(ui: &Ui, s: &str, font: FontId, max_width: f32) -> String {
@@ -327,80 +327,76 @@ impl App {
         if up { self.selected = self.selected.saturating_sub(1); }
         if activate { self.activate(); return; }
 
+        // Input panel
+        let input_response = egui::TopBottomPanel::top("input")
+            .frame(common::input_frame())
+            .show(ctx, |ui: &mut Ui| {
+                let input_font = FontId::new(INPUT_SIZE, FontFamily::Proportional);
+                let old_query = self.query.clone();
+                let input = egui::TextEdit::singleline(&mut self.query)
+                    .font(input_font.clone())
+                    .text_color(colors::TEXT_PRIMARY)
+                    .hint_text(RichText::new("Search...").color(colors::TEXT_MUTED))
+                    .frame(false)
+                    .desired_width(ui.available_width());
+                let output = input.show(ui);
+                if ui.ctx().input(|i| i.focused) {
+                    output.response.request_focus();
+                } else {
+                    output.response.surrender_focus();
+                }
+                if self.query != old_query { self.filter(); }
+
+                if !self.ghost_text_cache.is_empty() && !self.query.is_empty() {
+                    let mut job = egui::text::LayoutJob::default();
+                    job.append(&self.query, 0.0, egui::TextFormat {
+                        font_id: input_font.clone(),
+                        color: Color32::TRANSPARENT,
+                        ..Default::default()
+                    });
+                    job.append(&self.ghost_text_cache, 0.0, egui::TextFormat {
+                        font_id: input_font,
+                        color: colors::GHOST_TEXT,
+                        ..Default::default()
+                    });
+                    let galley = ui.fonts(|f| f.layout_job(job));
+                    ui.painter().galley(output.galley_pos, galley, Color32::TRANSPARENT);
+                }
+            });
+
+        // List panel
         CentralPanel::default()
             .frame(common::panel_frame())
             .show(ctx, |ui: &mut Ui| {
-                let screen = ui.available_rect_before_wrap();
-                let content_width = screen.width();
-
-                let input_font = FontId::new(INPUT_SIZE, FontFamily::Proportional);
-
-                common::input_frame().show(ui, |ui: &mut Ui| {
-                    let old_query = self.query.clone();
-                    let input = egui::TextEdit::singleline(&mut self.query)
-                        .font(input_font.clone())
-                        .text_color(colors::TEXT_PRIMARY)
-                        .hint_text(RichText::new("Search...").color(colors::TEXT_MUTED))
-                        .frame(false)
-                        .desired_width(ui.available_width());
-                    let output = input.show(ui);
-                    if ui.ctx().input(|i| i.focused) {
-                        output.response.request_focus();
-                    } else {
-                        output.response.surrender_focus();
-                    }
-                    if self.query != old_query { self.filter(); }
-
-                    if !self.ghost_text_cache.is_empty() && !self.query.is_empty() {
-                        let mut job = egui::text::LayoutJob::default();
-                        job.append(&self.query, 0.0, egui::TextFormat {
-                            font_id: input_font.clone(),
-                            color: Color32::TRANSPARENT,
-                            ..Default::default()
-                        });
-                        job.append(&self.ghost_text_cache, 0.0, egui::TextFormat {
-                            font_id: input_font,
-                            color: colors::GHOST_TEXT,
-                            ..Default::default()
-                        });
-                        let galley = ui.fonts(|f| f.layout_job(job));
-                        ui.painter().galley(output.galley_pos, galley, Color32::TRANSPARENT);
-                    }
-                });
-
-                let separator_y = ui.cursor().min.y;
-
-                // Measure actual header height from rendered input section
+                let content_width = ui.available_width();
                 let row_height = ICON_CONTAINER + ROW_PADDING * 2.0;
-                let header_height = ui.cursor().min.y;
+                let header_height = input_response.response.rect.height();
                 let spacing_y = ui.spacing().item_spacing.y;
+
+                // Auto-resize window to fit content
                 let num_items = self.filtered.len().min(MAX_VISIBLE_ITEMS);
                 let list_height = if num_items > 0 {
                     num_items as f32 * row_height + (num_items - 1) as f32 * spacing_y
                 } else {
                     0.0
                 };
-                let desired_height = header_height + list_height;
-                let target_height = desired_height.min(self.max_size.1);
+                let target_height = (header_height + list_height).min(self.max_size.1);
                 if (target_height - self.last_height).abs() > 1.0 {
                     self.last_height = target_height;
-                    let w = self.max_size.0 as i32;
-                    let h = target_height as i32;
                     hyprland::dispatch_async(
                         "resizewindowpixel",
-                        &format!("exact {} {},class:launcher", w, h),
+                        &format!("exact {} {},class:launcher", self.max_size.0 as i32, target_height as i32),
                     );
                 }
 
                 let visible_height = (self.max_size.1 - header_height).max(row_height);
                 let scroll_to_selected = down || up;
 
-                // Pre-computed fonts (avoid allocation per row)
                 let text_font = FontId::new(TEXT_SIZE, FontFamily::Proportional);
                 let ws_font = FontId::new(TEXT_SIZE * 0.85, FontFamily::Proportional);
                 let text_x = ROW_PADDING + ICON_CONTAINER + ICON_LABEL_SPACING;
 
-                // Cache display names if width changed or cache is empty
+                // Cache display names on width change
                 if (self.last_content_width - content_width).abs() > 1.0 || self.display_names.is_empty() {
                     self.last_content_width = content_width;
                     self.display_names.clear();
@@ -420,10 +416,6 @@ impl App {
                 let vl_output = ScrollArea::vertical()
                     .max_height(visible_height)
                     .show(ui, |ui: &mut Ui| {
-                    let mut clip = ui.clip_rect();
-                    clip.min.y = clip.min.y.max(separator_y);
-                    ui.set_clip_rect(clip);
-
                     virtual_list(
                         ui,
                         filtered.len(),
@@ -435,27 +427,12 @@ impl App {
                             let idx = filtered[i];
                             let e = &entries[idx];
                             let sel = i == self.selected;
-                            let is_window = e.is_window();
                             let text_color = if sel { colors::TEXT_PRIMARY } else { colors::TEXT_SECONDARY };
                             let row_y = row_rect.min.y;
 
-                            let icon_rect = egui::Rect::from_min_size(
-                                egui::pos2(ROW_PADDING, row_y + ROW_PADDING),
-                                egui::vec2(ICON_CONTAINER, ICON_CONTAINER),
-                            );
-
-                            if is_window {
-                                ui.painter().circle_stroke(
-                                    icon_rect.center(),
-                                    ICON_CONTAINER / 2.0,
-                                    Stroke::new(1.5, colors::ACCENT),
-                                );
-                            }
-
                             if let Some(tex) = e.icon() {
-                                let icon_offset = (ICON_CONTAINER - ICON_SIZE) / 2.0;
                                 let img_rect = egui::Rect::from_min_size(
-                                    icon_rect.min + egui::vec2(icon_offset, icon_offset),
+                                    egui::pos2(ROW_PADDING + (ICON_CONTAINER - ICON_SIZE) / 2.0, row_y + ROW_PADDING + (ICON_CONTAINER - ICON_SIZE) / 2.0),
                                     egui::vec2(ICON_SIZE, ICON_SIZE),
                                 );
                                 ui.painter().image(
@@ -477,12 +454,8 @@ impl App {
                             );
 
                             if let Some(ws) = e.workspace() {
-                                let ws_center = egui::pos2(
-                                    content_width - ROW_PADDING - ICON_CONTAINER / 2.0,
-                                    row_y + row_height / 2.0,
-                                );
                                 ui.painter().text(
-                                    ws_center,
+                                    egui::pos2(content_width - ROW_PADDING - ICON_CONTAINER / 2.0, row_y + row_height / 2.0),
                                     egui::Align2::CENTER_CENTER,
                                     ws,
                                     ws_font.clone(),
@@ -497,8 +470,6 @@ impl App {
                     self.selected = i;
                     self.activate();
                 }
-
-                common::paint_input_separator(ui, separator_y);
             });
     }
 }

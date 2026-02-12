@@ -17,15 +17,16 @@ pub const REPEAT_INTERVAL_MS: u128 = 120;
 // Colors
 pub mod colors {
     use eframe::egui::Color32;
-    pub const BG_BASE: Color32 = Color32::from_rgba_premultiplied(12, 12, 12, 160);
-    pub const BG_INPUT: Color32 = Color32::TRANSPARENT;
-    pub const BG_SELECTED: Color32 = Color32::from_rgba_premultiplied(60, 100, 160, 50);
-    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(240, 240, 240);
-    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(210, 210, 210);
-    pub const TEXT_MUTED: Color32 = Color32::from_rgb(95, 95, 95);
-    pub const GHOST_TEXT: Color32 = Color32::from_rgba_premultiplied(120, 120, 120, 140);
-    pub const BG_PREVIEW: Color32 = Color32::from_rgba_premultiplied(18, 18, 18, 160);
+    pub const BG_BASE: Color32 = Color32::from_rgb(18, 18, 18);
+    pub const BG_INPUT: Color32 = Color32::from_rgb(12, 12, 12);
+    pub const BG_SELECTED: Color32 = Color32::from_rgb(28, 28, 28);
+    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(235, 235, 235);
+    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(180, 180, 180);
+    pub const TEXT_MUTED: Color32 = Color32::from_rgb(80, 80, 80);
+    pub const GHOST_TEXT: Color32 = Color32::from_rgb(60, 60, 60);
+    pub const BG_PREVIEW: Color32 = Color32::from_rgb(22, 22, 22);
     pub const ACCENT: Color32 = Color32::from_rgb(100, 160, 220);
+    pub const ACCENT_BAR: f32 = 2.5;
 }
 
 /// Panel frame with semi-transparent dark background
@@ -36,13 +37,11 @@ pub fn panel_frame() -> Frame {
     }
 }
 
-/// Input field frame with opaque dark background and rounded corners
+/// Input field frame - clean padding, no background
 pub fn input_frame() -> Frame {
     Frame {
         fill: colors::BG_INPUT,
-        corner_radius: egui::CornerRadius::same(6),
-        inner_margin: egui::Margin::symmetric(12, 6),
-        outer_margin: egui::Margin::same(6),
+        inner_margin: egui::Margin::symmetric(14, 10),
         ..Frame::NONE
     }
 }
@@ -132,6 +131,11 @@ pub fn virtual_list(
         if is_selected {
             if !skip_selected_highlight {
                 ui.painter().rect_filled(row_rect, 0.0, colors::BG_SELECTED);
+                let bar = Rect::from_min_size(
+                    row_rect.left_top(),
+                    egui::vec2(colors::ACCENT_BAR, row_height),
+                );
+                ui.painter().rect_filled(bar, 0.0, colors::ACCENT);
             }
             selected_rect = Some(row_rect);
         }
@@ -241,11 +245,12 @@ pub fn handle_navigation_keys(
     (down, up)
 }
 
-/// Configure transparent style on the egui context
+/// Configure style on the egui context
 pub fn setup_transparent_style(cc: &eframe::CreationContext) {
     let mut style = egui::Style::default();
     style.visuals.window_fill = egui::Color32::TRANSPARENT;
     style.visuals.panel_fill = egui::Color32::TRANSPARENT;
+    style.spacing.scroll.bar_width = 8.0;
     cc.egui_ctx.set_style(style);
 }
 
