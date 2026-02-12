@@ -213,6 +213,7 @@ impl App {
                         egui::Key::Enter => activate = true,
                         egui::Key::C if modifiers.ctrl => activate = true,
                         egui::Key::D if modifiers.ctrl => delete = true,
+                        egui::Key::Delete => delete = true,
                         _ => {}
                     }
                 }
