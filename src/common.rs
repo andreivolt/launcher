@@ -18,7 +18,7 @@ pub const REPEAT_INTERVAL_MS: u128 = 120;
 pub mod colors {
     use eframe::egui::Color32;
     pub const BG_BASE: Color32 = Color32::from_rgb(0, 0, 0);
-    pub const BG_INPUT: Color32 = Color32::from_rgb(0, 0, 0);
+    pub const BG_INPUT: Color32 = Color32::from_rgb(18, 18, 18);
     pub const BG_SELECTED: Color32 = Color32::from_rgb(15, 15, 15);
     pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(255, 255, 255);
     pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(170, 170, 170);
