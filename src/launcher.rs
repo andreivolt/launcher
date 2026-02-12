@@ -459,7 +459,7 @@ impl App {
                                     egui::Align2::CENTER_CENTER,
                                     ws,
                                     ws_font.clone(),
-                                    colors::TEXT_MUTED,
+                                    colors::ACCENT,
                                 );
                             }
                         },
