@@ -1,6 +1,6 @@
 //! Shared constants and utilities for launcher and clipboard
 
-use eframe::egui::{self, Frame, Sense, Ui};
+use eframe::egui::{self, Frame, Sense, Ui, Rect};
 
 // Layout constants - golden ratio based
 pub const GOLDEN: f32 = 1.618;
@@ -64,41 +64,98 @@ pub fn paint_input_separator(ui: &mut Ui, y: f32) {
     ui.painter().hline(0.0..=width, y, stroke);
 }
 
-/// Render a selectable row with automatic scroll-into-view
-/// Returns (row_rect, row_response, was_clicked)
-pub fn render_row(
+pub struct VirtualListOutput {
+    pub clicked: Option<usize>,
+    pub selected_rect: Option<Rect>,
+}
+
+/// Render a virtualized list inside a ScrollArea closure.
+/// Only renders rows visible in the clip rect, using blank space for the rest.
+pub fn virtual_list(
     ui: &mut Ui,
-    index: usize,
+    total_items: usize,
+    row_height: f32,
     selected: usize,
     scroll_to_selected: bool,
-    row_height: f32,
-    content_width: f32,
-) -> (egui::Rect, egui::Response, bool) {
-    let is_selected = index == selected;
+    skip_selected_highlight: bool,
+    mut render_row: impl FnMut(&mut Ui, usize, Rect),
+) -> VirtualListOutput {
+    if total_items == 0 {
+        return VirtualListOutput { clicked: None, selected_rect: None };
+    }
 
-    // Get current Y position from cursor
-    let row_y = ui.cursor().min.y;
-    let row_rect = egui::Rect::from_min_size(
-        egui::pos2(0.0, row_y),
-        egui::vec2(content_width, row_height),
-    );
+    let content_width = ui.available_width();
+    let spacing_y = ui.spacing().item_spacing.y;
+    let stride = row_height + spacing_y;
+    let list_top = ui.cursor().min.y;
 
-    // Draw selection background
-    if is_selected {
-        ui.painter().rect_filled(row_rect, 0.0, colors::BG_SELECTED);
-        if scroll_to_selected {
-            ui.scroll_to_rect(row_rect, Some(egui::Align::Center));
+    // Handle scroll-to-selected before computing visible range
+    if scroll_to_selected {
+        let sel_top = list_top + selected as f32 * stride;
+        let sel_rect = Rect::from_min_size(
+            egui::pos2(0.0, sel_top),
+            egui::vec2(content_width, row_height),
+        );
+        ui.scroll_to_rect(sel_rect, Some(egui::Align::Center));
+    }
+
+    // Determine visible range from clip rect
+    let clip = ui.clip_rect();
+    let first_visible = ((clip.min.y - list_top) / stride).floor().max(0.0) as usize;
+    let last_visible = (((clip.max.y - list_top) / stride).ceil() as usize).min(total_items);
+    // Add 1-row buffer on each side for smooth scrolling
+    let render_start = first_visible.saturating_sub(1);
+    let render_end = (last_visible + 1).min(total_items);
+
+
+
+    // Space before visible rows
+    if render_start > 0 {
+        let skip_h = render_start as f32 * stride - spacing_y;
+        ui.add_space(skip_h);
+        // After add_space, egui adds item_spacing automatically before next widget.
+        // We already accounted for spacing in stride, so add spacing_y back
+        // to compensate (the next allocate_exact_size will get extra spacing from egui).
+    }
+
+    let mut clicked = None;
+    let mut selected_rect = None;
+
+    for i in render_start..render_end {
+        let row_y = ui.cursor().min.y;
+        let row_rect = Rect::from_min_size(
+            egui::pos2(0.0, row_y),
+            egui::vec2(content_width, row_height),
+        );
+
+        let is_selected = i == selected;
+        if is_selected {
+            if !skip_selected_highlight {
+                ui.painter().rect_filled(row_rect, 0.0, colors::BG_SELECTED);
+            }
+            selected_rect = Some(row_rect);
+        }
+
+        let (_, response) = ui.allocate_exact_size(
+            egui::vec2(content_width, row_height),
+            Sense::click(),
+        );
+
+        render_row(ui, i, row_rect);
+
+        if response.clicked() {
+            clicked = Some(i);
         }
     }
 
-    // Allocate space for the row
-    let (_, response) = ui.allocate_exact_size(
-        egui::vec2(content_width, row_height),
-        Sense::click(),
-    );
+    // Space after visible rows
+    if render_end < total_items {
+        let remaining = total_items - render_end;
+        let skip_h = remaining as f32 * stride - spacing_y;
+        ui.add_space(skip_h);
+    }
 
-    let clicked = response.clicked();
-    (row_rect, response, clicked)
+    VirtualListOutput { clicked, selected_rect }
 }
 
 /// Handle navigation keys and return (down, up) flags

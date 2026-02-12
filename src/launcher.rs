@@ -1,7 +1,7 @@
 //! App launcher using eframe (regular window in special workspace)
 
-use eframe::egui::{self, CentralPanel, Context, Color32, RichText, ScrollArea, Sense, Ui, FontFamily, FontId, Stroke};
-use launcher::common::{self, colors, handle_navigation_keys, TEXT_SIZE, INPUT_SIZE};
+use eframe::egui::{self, CentralPanel, Context, Color32, RichText, ScrollArea, Ui, FontFamily, FontId, Stroke};
+use launcher::common::{self, colors, handle_navigation_keys, virtual_list, TEXT_SIZE, INPUT_SIZE};
 use launcher::scroll::ScrollMomentum;
 use launcher::{desktop, hyprland};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
@@ -392,7 +392,6 @@ impl App {
                     );
                 }
 
-                let mut clicked = None;
                 let visible_height = (self.max_size.1 - header_height).max(row_height);
                 let scroll_to_selected = down || up;
 
@@ -414,97 +413,87 @@ impl App {
                     }
                 }
 
-                ScrollArea::vertical()
+                let filtered = &self.filtered;
+                let entries = &self.entries;
+                let display_names = &self.display_names;
+
+                let vl_output = ScrollArea::vertical()
                     .max_height(visible_height)
                     .show(ui, |ui: &mut Ui| {
-                    // Clip scroll content below the input area
                     let mut clip = ui.clip_rect();
                     clip.min.y = clip.min.y.max(separator_y);
                     ui.set_clip_rect(clip);
 
-                    for (i, &idx) in self.filtered.iter().enumerate() {
-                        let e = &self.entries[idx];
-                        let sel = i == self.selected;
-                        let is_window = e.is_window();
+                    virtual_list(
+                        ui,
+                        filtered.len(),
+                        row_height,
+                        self.selected,
+                        scroll_to_selected,
+                        false,
+                        |ui, i, row_rect| {
+                            let idx = filtered[i];
+                            let e = &entries[idx];
+                            let sel = i == self.selected;
+                            let is_window = e.is_window();
+                            let text_color = if sel { colors::TEXT_PRIMARY } else { colors::TEXT_SECONDARY };
+                            let row_y = row_rect.min.y;
 
-                        let row_y = ui.cursor().min.y;
-                        let row_rect = egui::Rect::from_min_size(
-                            egui::pos2(0.0, row_y),
-                            egui::vec2(screen.width(), row_height),
-                        );
+                            let icon_rect = egui::Rect::from_min_size(
+                                egui::pos2(ROW_PADDING, row_y + ROW_PADDING),
+                                egui::vec2(ICON_CONTAINER, ICON_CONTAINER),
+                            );
 
-                        if sel {
-                            ui.painter().rect_filled(row_rect, 0.0, colors::BG_SELECTED);
-                            if scroll_to_selected {
-                                ui.scroll_to_rect(row_rect, Some(egui::Align::Center));
+                            if is_window {
+                                ui.painter().circle_stroke(
+                                    icon_rect.center(),
+                                    ICON_CONTAINER / 2.0,
+                                    Stroke::new(1.5, colors::ACCENT),
+                                );
                             }
-                        }
 
-                        let text_color = if sel { colors::TEXT_PRIMARY } else { colors::TEXT_SECONDARY };
+                            if let Some(tex) = e.icon() {
+                                let icon_offset = (ICON_CONTAINER - ICON_SIZE) / 2.0;
+                                let img_rect = egui::Rect::from_min_size(
+                                    icon_rect.min + egui::vec2(icon_offset, icon_offset),
+                                    egui::vec2(ICON_SIZE, ICON_SIZE),
+                                );
+                                ui.painter().image(
+                                    tex.id(),
+                                    img_rect,
+                                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
+                            }
 
-                        let (_, row_response) = ui.allocate_exact_size(
-                            egui::vec2(content_width, row_height),
-                            Sense::click(),
-                        );
-
-                        let icon_rect = egui::Rect::from_min_size(
-                            egui::pos2(ROW_PADDING, row_y + ROW_PADDING),
-                            egui::vec2(ICON_CONTAINER, ICON_CONTAINER),
-                        );
-
-                        if is_window {
-                            ui.painter().circle_stroke(
-                                icon_rect.center(),
-                                ICON_CONTAINER / 2.0,
-                                Stroke::new(1.5, colors::ACCENT),
-                            );
-                        }
-
-                        if let Some(tex) = e.icon() {
-                            let icon_offset = (ICON_CONTAINER - ICON_SIZE) / 2.0;
-                            let img_rect = egui::Rect::from_min_size(
-                                icon_rect.min + egui::vec2(icon_offset, icon_offset),
-                                egui::vec2(ICON_SIZE, ICON_SIZE),
-                            );
-                            ui.painter().image(
-                                tex.id(),
-                                img_rect,
-                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                Color32::WHITE,
-                            );
-                        }
-
-                        let text_y = row_y + (row_height - TEXT_SIZE) / 2.0;
-                        let display_name = self.display_names.get(&idx).map(|s| s.as_str()).unwrap_or(e.name());
-                        ui.painter().text(
-                            egui::pos2(text_x, text_y),
-                            egui::Align2::LEFT_TOP,
-                            display_name,
-                            text_font.clone(),
-                            text_color,
-                        );
-
-                        if let Some(ws) = e.workspace() {
-                            let ws_center = egui::pos2(
-                                content_width - ROW_PADDING - ICON_CONTAINER / 2.0,
-                                row_y + row_height / 2.0,
-                            );
+                            let text_y = row_y + (row_height - TEXT_SIZE) / 2.0;
+                            let display_name = display_names.get(&idx).map(|s| s.as_str()).unwrap_or(e.name());
                             ui.painter().text(
-                                ws_center,
-                                egui::Align2::CENTER_CENTER,
-                                ws,
-                                ws_font.clone(),
-                                colors::TEXT_MUTED,
+                                egui::pos2(text_x, text_y),
+                                egui::Align2::LEFT_TOP,
+                                display_name,
+                                text_font.clone(),
+                                text_color,
                             );
-                        }
 
-                        if row_response.clicked() {
-                            clicked = Some(i);
-                        }
-                    }
-                });
+                            if let Some(ws) = e.workspace() {
+                                let ws_center = egui::pos2(
+                                    content_width - ROW_PADDING - ICON_CONTAINER / 2.0,
+                                    row_y + row_height / 2.0,
+                                );
+                                ui.painter().text(
+                                    ws_center,
+                                    egui::Align2::CENTER_CENTER,
+                                    ws,
+                                    ws_font.clone(),
+                                    colors::TEXT_MUTED,
+                                );
+                            }
+                        },
+                    )
+                }).inner;
 
-                if let Some(i) = clicked {
+                if let Some(i) = vl_output.clicked {
                     self.selected = i;
                     self.activate();
                 }
