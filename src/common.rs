@@ -18,13 +18,13 @@ pub const REPEAT_INTERVAL_MS: u128 = 120;
 pub mod colors {
     use eframe::egui::Color32;
     pub const BG_BASE: Color32 = Color32::from_rgb(0, 0, 0);
-    pub const BG_INPUT: Color32 = Color32::from_rgb(18, 18, 18);
-    pub const BG_SELECTED: Color32 = Color32::from_rgb(15, 15, 15);
+    pub const BG_INPUT: Color32 = Color32::from_rgb(16, 16, 16);
+    pub const BG_SELECTED: Color32 = Color32::from_rgb(16, 16, 16);
     pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(255, 255, 255);
     pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(170, 170, 170);
-    pub const TEXT_MUTED: Color32 = Color32::from_rgb(70, 70, 70);
-    pub const GHOST_TEXT: Color32 = Color32::from_rgb(50, 50, 50);
-    pub const BG_PREVIEW: Color32 = Color32::from_rgb(8, 8, 8);
+    pub const TEXT_MUTED: Color32 = Color32::from_rgb(60, 60, 60);
+    pub const GHOST_TEXT: Color32 = Color32::from_rgb(40, 40, 40);
+    pub const BG_PREVIEW: Color32 = Color32::from_rgb(16, 16, 16);
     pub const ACCENT: Color32 = Color32::from_rgb(100, 160, 220);
     pub const ACCENT_BAR: f32 = 2.5;
 }
