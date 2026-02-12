@@ -393,7 +393,7 @@ impl App {
                 let scroll_to_selected = down || up;
 
                 let text_font = FontId::new(TEXT_SIZE, FontFamily::Proportional);
-                let ws_font = FontId::new(TEXT_SIZE * 0.85, FontFamily::Proportional);
+                let ws_font = FontId::new(TEXT_SIZE * 0.8, FontFamily::Monospace);
                 let text_x = ROW_PADDING + ICON_CONTAINER + ICON_LABEL_SPACING;
 
                 // Cache display names on width change
@@ -454,8 +454,14 @@ impl App {
                             );
 
                             if let Some(ws) = e.workspace() {
+                                let badge_center = egui::pos2(
+                                    content_width - ROW_PADDING - ICON_CONTAINER / 2.0,
+                                    row_y + row_height / 2.0,
+                                );
+                                let badge_r = ICON_CONTAINER / 2.0;
+                                ui.painter().circle_filled(badge_center, badge_r, colors::BG_SELECTED);
                                 ui.painter().text(
-                                    egui::pos2(content_width - ROW_PADDING - ICON_CONTAINER / 2.0, row_y + row_height / 2.0),
+                                    badge_center,
                                     egui::Align2::CENTER_CENTER,
                                     ws,
                                     ws_font.clone(),
