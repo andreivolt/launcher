@@ -42,6 +42,7 @@ pub fn input_frame() -> Frame {
     Frame {
         fill: colors::BG_INPUT,
         inner_margin: egui::Margin::symmetric(14, 10),
+        outer_margin: egui::Margin { bottom: 1, ..Default::default() },
         ..Frame::NONE
     }
 }
@@ -56,12 +57,7 @@ pub fn preview_frame() -> Frame {
     }
 }
 
-/// Thin separator line below the input area (call after scroll area to render on top)
-pub fn paint_input_separator(ui: &mut Ui, y: f32) {
-    let width = ui.available_width();
-    let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(8));
-    ui.painter().hline(0.0..=width, y, stroke);
-}
+
 
 pub struct VirtualListOutput {
     pub clicked: Option<usize>,

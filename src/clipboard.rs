@@ -233,32 +233,30 @@ impl App {
             }
         }
 
+        let input_response = egui::TopBottomPanel::top("input")
+            .frame(common::input_frame())
+            .show(ctx, |ui: &mut Ui| {
+                let font_id = FontId::new(INPUT_SIZE, FontFamily::Proportional);
+                let old_query = self.query.clone();
+                let input = egui::TextEdit::singleline(&mut self.query)
+                    .font(font_id)
+                    .text_color(colors::TEXT_PRIMARY)
+                    .hint_text(RichText::new("Search clipboard...").color(colors::TEXT_MUTED))
+                    .frame(false)
+                    .desired_width(ui.available_width());
+                let r = ui.add(input);
+                if ui.ctx().input(|i| i.focused) {
+                    r.request_focus();
+                } else {
+                    r.surrender_focus();
+                }
+                if self.query != old_query { self.filter(); }
+            });
+
         CentralPanel::default()
             .frame(common::panel_frame())
             .show(ctx, |ui: &mut Ui| {
-                let _screen = ui.available_rect_before_wrap();
-                let font_id = FontId::new(INPUT_SIZE, FontFamily::Proportional);
-
-                common::input_frame().show(ui, |ui: &mut Ui| {
-                    let old_query = self.query.clone();
-                    let input = egui::TextEdit::singleline(&mut self.query)
-                        .font(font_id)
-                        .text_color(colors::TEXT_PRIMARY)
-                        .hint_text(RichText::new("Search clipboard...").color(colors::TEXT_MUTED))
-                        .frame(false)
-                        .desired_width(ui.available_width());
-                    let r = ui.add(input);
-                    if ui.ctx().input(|i| i.focused) {
-                        r.request_focus();
-                    } else {
-                        r.surrender_focus();
-                    }
-                    if self.query != old_query { self.filter(); }
-                });
-
-                let separator_y = ui.cursor().min.y;
-
-                let header_height = ui.cursor().min.y;
+                let header_height = input_response.response.rect.height();
                 let max_visible = 12;
                 let num_items = self.filtered.len().min(max_visible);
                 let spacing_y = ui.spacing().item_spacing.y;
@@ -301,10 +299,6 @@ impl App {
                     .id_salt("clip_list")
                     .max_height(list_height)
                     .show(ui, |ui: &mut Ui| {
-                        let mut clip = ui.clip_rect();
-                        clip.min.y = clip.min.y.max(separator_y);
-                        ui.set_clip_rect(clip);
-
                         let col_width = ui.available_width();
 
                         let vl = virtual_list(
@@ -471,7 +465,6 @@ impl App {
                     self.activate();
                 }
 
-                common::paint_input_separator(ui, separator_y);
             });
 
     }
