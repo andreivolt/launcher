@@ -192,7 +192,7 @@ pub fn collect_entries() -> Vec<DesktopEntry> {
     entries
 }
 
-/// Build icon index from system icon theme directories (hicolor + pixmaps)
+/// Build icon index from system icon theme directories
 pub fn build_icon_index() -> HashMap<String, PathBuf> {
     let mut index = HashMap::new();
     let sizes = ["48x48", "64x64", "128x128", "256x256", "512x512", "32x32", "scalable"];
@@ -211,16 +211,34 @@ pub fn build_icon_index() -> HashMap<String, PathBuf> {
         }
     }
 
-    for base in dirs {
-        let hicolor = base.join("hicolor");
-        for size in &sizes {
-            for cat in ["apps", "applications"] {
-                let dir = hicolor.join(size).join(cat);
-                if let Ok(entries) = fs::read_dir(&dir) {
-                    for e in entries.flatten() {
-                        let path = e.path();
-                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                            index.entry(stem.to_string()).or_insert(path);
+    // Read GTK icon theme name from settings
+    let gtk_theme = fs::read_to_string(
+        env::var("HOME").unwrap_or_default() + "/.config/gtk-3.0/settings.ini"
+    ).ok().and_then(|content| {
+        content.lines()
+            .find(|l| l.starts_with("gtk-icon-theme-name="))
+            .map(|l| l.trim_start_matches("gtk-icon-theme-name=").to_string())
+    });
+
+    // Search active theme first (higher priority), then hicolor as fallback
+    let themes: Vec<&str> = if let Some(ref t) = gtk_theme {
+        vec![t.as_str(), "hicolor"]
+    } else {
+        vec!["hicolor"]
+    };
+
+    for base in &dirs {
+        for theme in &themes {
+            let theme_dir = base.join(theme);
+            for size in &sizes {
+                for cat in ["apps", "applications"] {
+                    let dir = theme_dir.join(size).join(cat);
+                    if let Ok(entries) = fs::read_dir(&dir) {
+                        for e in entries.flatten() {
+                            let path = e.path();
+                            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                                index.entry(stem.to_string()).or_insert(path);
+                            }
                         }
                     }
                 }
