@@ -248,6 +248,32 @@ pub fn setup_transparent_style(cc: &eframe::CreationContext) {
     style.visuals.panel_fill = egui::Color32::TRANSPARENT;
     style.spacing.scroll.bar_width = 8.0;
     cc.egui_ctx.set_style(style);
+
+    // Load Inter font if available, otherwise fall back to egui default
+    if let Some(font_path) = find_font("Inter") {
+        if let Ok(font_data) = std::fs::read(&font_path) {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert(
+                "inter".to_owned(),
+                std::sync::Arc::new(egui::FontData::from_owned(font_data)),
+            );
+            fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap()
+                .insert(0, "inter".to_owned());
+            cc.egui_ctx.set_fonts(fonts);
+        }
+    }
+}
+
+/// Find a font file by family name via fontconfig
+fn find_font(name: &str) -> Option<String> {
+    std::process::Command::new("fc-match")
+        .args([name, "--format=%{file}"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            let path = String::from_utf8_lossy(&o.stdout).to_string();
+            if path.is_empty() { None } else { Some(path) }
+        })
 }
 
 /// Build NativeOptions for a transparent, undecorated window
