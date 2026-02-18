@@ -265,11 +265,9 @@ pub fn cache_svgs(index: &mut HashMap<String, PathBuf>) {
     let cache_dir = svg_cache_dir();
     let _ = fs::create_dir_all(&cache_dir);
 
-    for (_name, path) in index.iter_mut() {
+    for (name, path) in index.iter_mut() {
         if path.extension().is_some_and(|e| e == "svg") {
-            let cached = cache_dir.join(
-                path.file_stem().unwrap_or_default()
-            ).with_extension("png");
+            let cached = cache_dir.join(format!("{name}.png"));
 
             if cached.exists() {
                 *path = cached;
