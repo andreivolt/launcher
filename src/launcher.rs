@@ -460,7 +460,7 @@ impl App {
                                     row_y + row_height / 2.0,
                                 );
                                 let circle_r = 3.0;
-                                let dot_color = if sel { colors::ACCENT } else { colors::TEXT_MUTED };
+                                let dot_color = colors::ACCENT;
                                 ui.painter().circle_filled(circle_center, circle_r, dot_color);
                             }
                         },
