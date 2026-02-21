@@ -24,7 +24,7 @@ pub fn font_family() -> &'static str {
 }
 
 pub fn input_size() -> f32 { text_size() * GOLDEN }
-pub fn row_height() -> f32 { (text_size() * 2.25).round() }
+pub fn row_height() -> f32 { (text_size() * 1.75).round() }
 
 // Key repeat timing
 pub const REPEAT_DELAY_MS: u128 = 300;
@@ -57,7 +57,7 @@ pub fn panel_frame() -> Frame {
 pub fn input_frame() -> Frame {
     Frame {
         fill: colors::BG_INPUT,
-        inner_margin: egui::Margin::symmetric(14, 10),
+        inner_margin: egui::Margin::symmetric(10, 8),
         outer_margin: egui::Margin { bottom: 1, ..Default::default() },
         ..Frame::NONE
     }
