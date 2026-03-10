@@ -51,6 +51,7 @@ pub mod colors {
 pub fn panel_frame() -> Frame {
     Frame {
         fill: colors::BG_BASE,
+        corner_radius: egui::CornerRadius { nw: 0, ne: 0, sw: 12, se: 12 },
         ..Frame::NONE
     }
 }
@@ -61,6 +62,7 @@ pub fn input_frame() -> Frame {
         fill: colors::BG_INPUT,
         inner_margin: egui::Margin::symmetric(10, 8),
         outer_margin: egui::Margin { bottom: 1, ..Default::default() },
+        corner_radius: egui::CornerRadius { nw: 12, ne: 12, sw: 0, se: 0 },
         ..Frame::NONE
     }
 }
