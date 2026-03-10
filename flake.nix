@@ -49,7 +49,7 @@
 
             postInstall = ''
               # Wrap both binaries with library paths
-              for bin in launcher clipboard picker; do
+              for bin in launcher clipboard picker clipd; do
                 wrapProgram $out/bin/$bin \
                   --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [
                     pkgs.wayland
@@ -126,12 +126,24 @@
               description = "Clipboard (eframe)";
               wantedBy = [ "hyprland-session.target" ];
               partOf = [ "hyprland-session.target" ];
-              path = [ pkgs.hyprland pkgs.cliphist pkgs.wl-clipboard ];
+              path = [ pkgs.hyprland pkgs.wl-clipboard ];
               serviceConfig = {
                 ExecStart = "${launcherPkg}/bin/clipboard";
                 Restart = "on-failure";
                 RestartSec = 2;
-                PassEnvironment = "HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR WAYLAND_DISPLAY XDG_DATA_HOME HOME";
+                PassEnvironment = "HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR WAYLAND_DISPLAY XDG_CACHE_HOME HOME";
+              };
+            };
+
+            systemd.user.services.clipd = {
+              description = "Clipboard daemon";
+              wantedBy = [ "hyprland-session.target" ];
+              partOf = [ "hyprland-session.target" ];
+              serviceConfig = {
+                ExecStart = "${launcherPkg}/bin/clipd";
+                Restart = "on-failure";
+                RestartSec = 2;
+                PassEnvironment = "HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR WAYLAND_DISPLAY XDG_CACHE_HOME HOME";
               };
             };
           };
