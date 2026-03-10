@@ -474,23 +474,24 @@ impl App {
 
                             let display_name = display_names.get(&idx).map(|s| s.as_str()).unwrap_or(e.name());
                             if let Some(sub) = e.subtitle() {
+                                // Window: title (primary, large) + class (subtitle, small)
+                                let right_margin = icon_container() + row_padding() * 2.0;
+                                let avail = content_width - text_x - right_margin;
+                                let title_display = truncate_to_width(ui, sub, text_font.clone(), avail);
                                 let total_h = text_size + line_gap + subtitle_size;
                                 let primary_y = row_y + (row_height - total_h) / 2.0;
                                 ui.painter().text(
                                     egui::pos2(text_x, primary_y),
                                     egui::Align2::LEFT_TOP,
-                                    display_name,
+                                    title_display,
                                     text_font.clone(),
                                     text_color,
                                 );
-                                let right_margin = icon_container() + row_padding() * 2.0;
-                                let avail = content_width - text_x - right_margin;
-                                let sub_display = truncate_to_width(ui, sub, subtitle_font.clone(), avail);
                                 let sub_color = if sel { colors::TEXT_SECONDARY } else { colors::TEXT_SUBTITLE };
                                 ui.painter().text(
                                     egui::pos2(text_x, primary_y + text_size + line_gap),
                                     egui::Align2::LEFT_TOP,
-                                    sub_display,
+                                    display_name,
                                     subtitle_font.clone(),
                                     sub_color,
                                 );
