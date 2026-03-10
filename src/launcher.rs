@@ -68,7 +68,7 @@ fn paint_highlighted(
     let base_fmt = egui::TextFormat { font_id: font.clone(), color: base_color, ..Default::default() };
     let highlight_fmt = egui::TextFormat {
         font_id: font.clone(),
-        color: base_color,
+        color: highlight_color,
         underline: egui::Stroke::new(1.0, highlight_color),
         ..Default::default()
     };
@@ -444,6 +444,16 @@ impl App {
 
         if down { self.selected = (self.selected + 1).min(max_sel); }
         if up { self.selected = self.selected.saturating_sub(1); }
+        if down || up {
+            if let Some(&idx) = self.filtered.get(self.selected) {
+                if let Entry::Window { ref workspace, ref address, .. } = self.entries[idx] {
+                    hyprland::dispatch_batch_async(&[
+                        ("workspace", workspace),
+                        ("alterzorder", &format!("top,address:{}", address)),
+                    ]);
+                }
+            }
+        }
         if activate { self.activate(); return; }
 
         // Input panel
@@ -463,11 +473,7 @@ impl App {
                         .desired_width(ui.available_width())
                         .show(ui)
                 }).inner;
-                if ui.ctx().input(|i| i.focused) {
-                    output.response.request_focus();
-                } else {
-                    output.response.surrender_focus();
-                }
+                output.response.request_focus();
                 if self.query != old_query { self.filter(); }
 
                 // Move cursor to end after ghost text acceptance
@@ -526,7 +532,7 @@ impl App {
                     if (target_height - self.last_height).abs() < 1.0 {
                         self.last_height = target_height;
                     }
-                    hyprland::dispatch(
+                    hyprland::dispatch_async(
                         "resizewindowpixel",
                         &format!("exact {} {},class:launcher", self.max_size.0 as i32, self.last_height as i32),
                     );
@@ -600,7 +606,7 @@ impl App {
                                 }
 
                                 let display_name = display_names.get(&idx).map(|s| s.as_str()).unwrap_or(e.name());
-                                let highlight = colors::ACCENT;
+                                let highlight = colors::TEXT_PRIMARY;
                                 if let Some(sub) = e.subtitle() {
                                     let right_margin = icon_container() + row_padding() * 2.0;
                                     let avail = content_width - text_x - right_margin;
@@ -619,9 +625,15 @@ impl App {
                                 }
 
                                 if let Entry::Window { workspace, .. } = e {
+                                    let dot_x = content_width - row_padding() - icon_container() / 2.0;
+                                    ui.painter().circle_filled(
+                                        egui::pos2(dot_x, row_y + row_height / 2.0),
+                                        3.0,
+                                        colors::ACCENT,
+                                    );
                                     let ws_color = if sel { colors::TEXT_SUBTITLE } else { colors::TEXT_MUTED };
                                     ui.painter().text(
-                                        egui::pos2(content_width - row_padding(), row_y + row_height / 2.0),
+                                        egui::pos2(dot_x - 8.0, row_y + row_height / 2.0),
                                         egui::Align2::RIGHT_CENTER,
                                         workspace,
                                         subtitle_font.clone(),
