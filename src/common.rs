@@ -1,6 +1,6 @@
 //! Shared constants and utilities for launcher and clipboard
 
-use eframe::egui::{self, Frame, Sense, Ui, Rect};
+use eframe::egui::{self, Color32, Context, FontFamily, FontId, Frame, RichText, Sense, Ui, Rect};
 use std::sync::OnceLock;
 
 pub const GOLDEN: f32 = 1.618;
@@ -65,6 +65,81 @@ pub fn input_frame() -> Frame {
         corner_radius: egui::CornerRadius::ZERO,
         ..Frame::NONE
     }
+}
+
+pub struct InputPanelOutput {
+    pub response: egui::InnerResponse<()>,
+    pub changed: bool,
+    pub cleared: bool,
+    pub text_edit_id: egui::Id,
+}
+
+/// Render the shared input panel with `>` prompt, focus handling, and optional ghost text.
+/// Returns the panel response and whether the query changed.
+pub fn input_panel(
+    ctx: &Context,
+    query: &mut String,
+    hint: &str,
+    ghost_text: Option<&str>,
+) -> InputPanelOutput {
+    let mut changed = false;
+    let mut text_edit_id = egui::Id::NULL;
+    // Handle Ctrl+U to clear input
+    let mut cleared = false;
+    ctx.input(|i| {
+        for event in &i.events {
+            if let egui::Event::Key { key: egui::Key::U, pressed: true, modifiers, .. } = event {
+                if modifiers.ctrl { cleared = true; }
+            }
+        }
+    });
+    if cleared && !query.is_empty() {
+        query.clear();
+        changed = true;
+    }
+    let response = egui::TopBottomPanel::top("input")
+        .frame(input_frame())
+        .show(ctx, |ui: &mut Ui| {
+            let input_font = FontId::new(input_size(), FontFamily::Proportional);
+            let old_query = query.clone();
+            let output = ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(RichText::new(">").font(input_font.clone()).color(colors::TEXT_SUBTITLE));
+                egui::TextEdit::singleline(query)
+                    .font(input_font.clone())
+                    .text_color(colors::TEXT_PRIMARY)
+                    .hint_text(RichText::new(hint).color(colors::TEXT_MUTED))
+                    .frame(false)
+                    .desired_width(ui.available_width())
+                    .show(ui)
+            }).inner;
+            if ui.ctx().input(|i| i.focused) {
+                output.response.request_focus();
+            } else {
+                output.response.surrender_focus();
+            }
+            changed = *query != old_query;
+            text_edit_id = output.response.id;
+
+            if let Some(ghost) = ghost_text {
+                if !ghost.is_empty() && !query.is_empty() {
+                    let mut job = egui::text::LayoutJob::default();
+                    job.append(query, 0.0, egui::TextFormat {
+                        font_id: input_font.clone(),
+                        color: Color32::TRANSPARENT,
+                        ..Default::default()
+                    });
+                    job.append(ghost, 0.0, egui::TextFormat {
+                        font_id: input_font,
+                        color: colors::GHOST_TEXT,
+                        ..Default::default()
+                    });
+                    let galley = ui.fonts(|f| f.layout_job(job));
+                    ui.painter().galley(output.galley_pos, galley, Color32::TRANSPARENT);
+                }
+            }
+        });
+    InputPanelOutput { response, changed, cleared, text_edit_id }
 }
 
 /// Preview pane frame with subtle background lift
@@ -312,6 +387,86 @@ pub fn window_options(app_id: &str, width: f32, height: f32) -> eframe::NativeOp
             .with_app_id(app_id),
         ..Default::default()
     }
+}
+
+/// Text color with dimming for unselected rows (0.5 opacity pattern)
+pub fn row_text_color(selected: bool) -> Color32 {
+    if selected { colors::TEXT_PRIMARY } else { colors::TEXT_SECONDARY }
+}
+
+/// Render "No results" empty state
+pub fn empty_state(ui: &mut Ui) {
+    let font = FontId::new(text_size(), FontFamily::Proportional);
+    let rect = ui.available_rect_before_wrap();
+    let center = egui::pos2(rect.center().x, rect.min.y + row_height());
+    ui.painter().text(center, egui::Align2::CENTER_CENTER, "No results", font, colors::TEXT_MUTED);
+}
+
+/// Find character indices where the query matches as substring or fuzzy
+pub fn match_indices(text: &str, query: &str) -> Vec<usize> {
+    if query.is_empty() { return vec![]; }
+    let text_lower = text.to_lowercase();
+    let query_lower = query.to_lowercase();
+    let query_chars: Vec<char> = query_lower.chars().collect();
+    // Try substring match first (contiguous)
+    if let Some(start) = text_lower.find(&query_lower) {
+        let mut indices = Vec::new();
+        let mut pos = start;
+        for _ in 0..query_lower.len() {
+            indices.push(pos);
+            pos += text_lower[pos..].chars().next().map_or(1, |c| c.len_utf8());
+        }
+        return indices;
+    }
+    // Fall back to fuzzy: sequential character matching
+    let mut indices = Vec::new();
+    let mut qi = 0;
+    for (ci, ch) in text_lower.char_indices() {
+        if qi >= query_chars.len() { break; }
+        if ch == query_chars[qi] {
+            indices.push(ci);
+            qi += 1;
+        }
+    }
+    if qi == query_chars.len() { indices } else { vec![] }
+}
+
+/// Paint text with highlighted match indices (underline + bright color)
+pub fn paint_highlighted(
+    ui: &Ui,
+    pos: egui::Pos2,
+    text: &str,
+    font: &FontId,
+    base_color: Color32,
+    highlight_color: Color32,
+    indices: &[usize],
+) {
+    if indices.is_empty() {
+        ui.painter().text(pos, egui::Align2::LEFT_TOP, text, font.clone(), base_color);
+        return;
+    }
+    let mut job = egui::text::LayoutJob::default();
+    let base_fmt = egui::TextFormat { font_id: font.clone(), color: base_color, ..Default::default() };
+    let highlight_fmt = egui::TextFormat {
+        font_id: font.clone(),
+        color: highlight_color,
+        underline: egui::Stroke::new(1.0, highlight_color),
+        ..Default::default()
+    };
+    let mut last = 0;
+    for &idx in indices {
+        if idx > last {
+            job.append(&text[last..idx], 0.0, base_fmt.clone());
+        }
+        let ch_len = text[idx..].chars().next().map_or(1, |c| c.len_utf8());
+        job.append(&text[idx..idx + ch_len], 0.0, highlight_fmt.clone());
+        last = idx + ch_len;
+    }
+    if last < text.len() {
+        job.append(&text[last..], 0.0, base_fmt);
+    }
+    let galley = ui.fonts(|f| f.layout_job(job));
+    ui.painter().galley(pos, galley, Color32::TRANSPARENT);
 }
 
 /// Truncate string to max characters with ellipsis

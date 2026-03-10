@@ -3,7 +3,7 @@
 use launcher::common::{self, colors, handle_navigation_keys, truncate, virtual_list};
 use launcher::scroll::ScrollMomentum;
 use launcher::hyprland;
-use eframe::egui::{self, CentralPanel, Context, RichText, ScrollArea, FontFamily, FontId, Ui};
+use eframe::egui::{self, CentralPanel, Context, ScrollArea, FontFamily, FontId, Ui};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -45,7 +45,7 @@ struct App {
 impl App {
     fn new() -> Self {
         let re = Regex::new(r"\[\[\s*binary data\s+[\d.]+\s*\w+\s+(\w+)\s+(\d+)x(\d+)\s*\]\]").unwrap();
-        let eframe_size = hyprland::window_size(0.382, 0.618, (300.0, 400.0));
+        let eframe_size = hyprland::window_size(0.618, 0.618, (500.0, 400.0));
         let max_size = (eframe_size.0 * 2.0, eframe_size.1 * 2.0);
 
         Self {
@@ -253,25 +253,80 @@ impl App {
             }
         }
 
-        let input_response = egui::TopBottomPanel::top("input")
-            .frame(common::input_frame())
-            .show(ctx, |ui: &mut Ui| {
-                let font_id = FontId::new(common::input_size(), FontFamily::Proportional);
-                let old_query = self.query.clone();
-                let input = egui::TextEdit::singleline(&mut self.query)
-                    .font(font_id)
-                    .text_color(colors::TEXT_PRIMARY)
-                    .hint_text(RichText::new("Search clipboard...").color(colors::TEXT_MUTED))
-                    .frame(false)
-                    .desired_width(ui.available_width());
-                let r = ui.add(input);
-                if ui.ctx().input(|i| i.focused) {
-                    r.request_focus();
+        let input_panel = common::input_panel(ctx, &mut self.query, "Search clipboard...", None);
+        if input_panel.changed || input_panel.cleared { self.filter(); }
+        let input_response = input_panel.response;
+
+        // Check if selected entry has preview content and compute its natural height
+        let (has_preview, preview_content_height) = self.filtered.get(self.selected)
+            .map(|&idx| {
+                let e = &self.entries[idx];
+                if e.is_image {
+                    let h = if let Some(tex) = &e.texture {
+                        let ts = tex.size_vec2();
+                        let preview_w = self.max_size.0 * 0.382 - 20.0; // minus inner margin
+                        let scale = (preview_w / ts.x).min(1.0);
+                        ts.y * scale + common::text_size() + 8.0 // image + dims label + spacing
+                    } else { 0.0 };
+                    (true, h)
                 } else {
-                    r.surrender_focus();
+                    let full = e.full_text.as_deref().unwrap_or(&e.text);
+                    if full.contains('\n') || full.chars().count() > 80 {
+                        let preview_w = self.max_size.0 * 0.382 - 20.0;
+                        let font = FontId::new(common::text_size() * 0.85, FontFamily::Proportional);
+                        let galley = ctx.fonts(|f| f.layout(
+                            full.to_owned(), font, colors::TEXT_PRIMARY, preview_w,
+                        ));
+                        (true, galley.size().y)
+                    } else {
+                        (false, 0.0)
+                    }
                 }
-                if self.query != old_query { self.filter(); }
-            });
+            })
+            .unwrap_or((false, 0.0));
+
+        // Preview pane (right side) when there's content to show
+        if has_preview {
+            egui::SidePanel::right("preview")
+                .frame(common::preview_frame())
+                .resizable(false)
+                .exact_width(self.max_size.0 * 0.382)
+                .show(ctx, |ui| {
+                    if let Some(&idx) = self.filtered.get(self.selected) {
+                        let e = &self.entries[idx];
+                        ScrollArea::vertical()
+                            .id_salt("preview_scroll")
+                            .show(ui, |ui| {
+                                if e.is_image {
+                                    if let Some(tex) = &e.texture {
+                                        let ts = tex.size_vec2();
+                                        let max_w = ui.available_width();
+                                        let scale = (max_w / ts.x).min(1.0);
+                                        let img_size = egui::vec2(ts.x * scale, ts.y * scale);
+                                        ui.image(egui::load::SizedTexture::new(tex.id(), img_size));
+                                    }
+                                    if let Some((w, h)) = e.dims {
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new(format!("{}x{}", w, h))
+                                            .font(FontId::new(common::text_size() * 0.85, FontFamily::Proportional))
+                                            .color(colors::TEXT_SUBTITLE));
+                                    }
+                                } else {
+                                    let full = e.full_text.as_deref().unwrap_or(&e.text);
+                                    let font = FontId::new(common::text_size() * 0.85, FontFamily::Proportional);
+                                    let galley = ui.painter().layout(
+                                        full.to_owned(),
+                                        font,
+                                        colors::TEXT_PRIMARY,
+                                        ui.available_width(),
+                                    );
+                                    let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+                                    ui.painter().galley(rect.min, galley, colors::TEXT_PRIMARY);
+                                }
+                            });
+                    }
+                });
+        }
 
         CentralPanel::default()
             .frame(common::panel_frame())
@@ -282,231 +337,136 @@ impl App {
                 let spacing_y = ui.spacing().item_spacing.y;
                 let items_height = if num_items > 0 {
                     num_items as f32 * common::row_height() + (num_items - 1) as f32 * spacing_y
+                } else if !self.query.is_empty() {
+                    common::row_height()
                 } else {
                     0.0
                 };
-                let desired_height = header_height + items_height;
+                // preview content height + header + preview frame margins (20px)
+                let min_height = if has_preview {
+                    (header_height + preview_content_height + 20.0).min(self.max_size.1)
+                } else {
+                    0.0
+                };
+                let desired_height = (header_height + items_height).max(min_height);
                 let target_height = desired_height.min(self.max_size.1);
                 if (target_height - self.last_height).abs() > 1.0 {
                     self.last_height = target_height;
-                    let w = self.max_size.0 as i32;
-                    let h = target_height as i32;
                     hyprland::dispatch_async(
                         "resizewindowpixel",
-                        &format!("exact {} {},class:clipboard", w, h),
+                        &format!("exact {} {},class:clipboard", self.max_size.0 as i32, target_height as i32),
                     );
                 }
 
                 let list_height = (self.max_size.1 - header_height).max(common::row_height());
                 let scroll_to_selected = down || up;
 
-                // Pre-compute whether selected entry needs expansion overlay
-                let selected_needs_expand = self.filtered.get(self.selected)
-                    .map(|&idx| &self.entries[idx])
-                    .map(|e| {
-                        if e.is_image { true }
-                        else {
-                            let full = e.full_text.as_deref().unwrap_or(&e.text);
-                            full.contains('\n') || full.chars().count() > 80
-                        }
-                    })
-                    .unwrap_or(false);
+                if self.filtered.is_empty() && !self.query.is_empty() {
+                    common::empty_state(ui);
+                } else {
+                    let filtered = &self.filtered;
+                    let entries = &self.entries;
+                    let query = &self.query;
 
-                let filtered = &self.filtered;
-                let entries = &self.entries;
+                    let vl_output = ScrollArea::vertical()
+                        .id_salt("clip_list")
+                        .max_height(list_height)
+                        .show(ui, |ui: &mut Ui| {
+                            let deleting = self.deleting;
+                            let vl = virtual_list(
+                                ui,
+                                filtered.len(),
+                                common::row_height(),
+                                self.selected,
+                                scroll_to_selected,
+                                false,
+                                |ui, i, rect| {
+                                    let idx = filtered[i];
+                                    let e = &entries[idx];
+                                    let sel = i == self.selected;
 
-                let vl_output = ScrollArea::vertical()
-                    .id_salt("clip_list")
-                    .max_height(list_height)
-                    .show(ui, |ui: &mut Ui| {
+                                    // Fade + slide animation for deleting row
+                                    let (alpha, x_offset) = if let Some((del_i, t)) = deleting {
+                                        if i == del_i {
+                                            let progress = (t.elapsed().as_secs_f32() / 0.15).min(1.0);
+                                            (((1.0 - progress) * 255.0) as u8, -progress * 40.0)
+                                        } else { (255, 0.0) }
+                                    } else { (255, 0.0) };
 
-                        let col_width = ui.available_width();
+                                    let base_color = common::row_text_color(sel);
+                                    let text_color = egui::Color32::from_rgba_unmultiplied(
+                                        base_color.r(), base_color.g(), base_color.b(), alpha,
+                                    );
 
-                        let deleting = self.deleting;
-                        let vl = virtual_list(
-                            ui,
-                            filtered.len(),
-                            common::row_height(),
-                            self.selected,
-                            scroll_to_selected,
-                            selected_needs_expand,
-                            |ui, i, rect| {
-                                let idx = filtered[i];
-                                let e = &entries[idx];
-                                let is_selected = i == self.selected;
+                                    let rx = rect.min.x + x_offset;
+                                    let text_font = FontId::new(common::text_size(), FontFamily::Proportional);
 
-                                // Fade + slide animation for deleting row
-                                let (alpha, x_offset) = if let Some((del_i, t)) = deleting {
-                                    if i == del_i {
-                                        let progress = (t.elapsed().as_secs_f32() / 0.15).min(1.0);
-                                        let alpha = ((1.0 - progress) * 255.0) as u8;
-                                        let x_offset = -progress * 40.0;
-                                        (alpha, x_offset)
-                                    } else { (255, 0.0) }
-                                } else { (255, 0.0) };
-
-                                let text_color = if is_selected {
-                                    colors::TEXT_PRIMARY
-                                } else {
-                                    colors::TEXT_SECONDARY
-                                };
-                                let text_color = egui::Color32::from_rgba_unmultiplied(
-                                    text_color.r(), text_color.g(), text_color.b(), alpha,
-                                );
-
-                                let rx = rect.min.x + x_offset;
-
-                                if e.is_image {
-                                    let row_tex = e.thumb.as_ref().or(e.texture.as_ref());
-                                    if let Some(tex) = row_tex {
-                                        let tex_size = tex.size_vec2();
-                                        let thumb_h = common::row_height() - 4.0;
-                                        let thumb_w = thumb_h * (tex_size.x / tex_size.y);
-                                        let thumb_rect = egui::Rect::from_min_size(
+                                    if e.is_image {
+                                        // Fixed square thumbnail container
+                                        let container_size = common::row_height() - 4.0;
+                                        let container_rect = egui::Rect::from_min_size(
                                             egui::pos2(rx + 8.0, rect.min.y + 2.0),
-                                            egui::vec2(thumb_w, thumb_h),
+                                            egui::vec2(container_size, container_size),
                                         );
-                                        let tint = egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha);
-                                        ui.painter().image(
-                                            tex.id(),
-                                            thumb_rect,
-                                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                            tint,
-                                        );
+                                        // Subtle background for the container
+                                        ui.painter().rect_filled(container_rect, 2.0,
+                                            egui::Color32::from_rgba_premultiplied(13, 13, 13, alpha));
 
-                                        let display_text = e.dims.map(|(w, h)| format!("{}x{}", w, h))
+                                        let row_tex = e.thumb.as_ref().or(e.texture.as_ref());
+                                        if let Some(tex) = row_tex {
+                                            let tex_size = tex.size_vec2();
+                                            // Fit image within square, preserve aspect ratio
+                                            let scale = (container_size / tex_size.x).min(container_size / tex_size.y);
+                                            let img_w = tex_size.x * scale;
+                                            let img_h = tex_size.y * scale;
+                                            let img_rect = egui::Rect::from_min_size(
+                                                egui::pos2(
+                                                    container_rect.min.x + (container_size - img_w) / 2.0,
+                                                    container_rect.min.y + (container_size - img_h) / 2.0,
+                                                ),
+                                                egui::vec2(img_w, img_h),
+                                            );
+                                            let tint = if sel {
+                                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha)
+                                            } else {
+                                                egui::Color32::from_rgba_unmultiplied(128, 128, 128, alpha)
+                                            };
+                                            ui.painter().image(
+                                                tex.id(), img_rect,
+                                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                                tint,
+                                            );
+                                        }
+                                        // Resolution text in monospace
+                                        let display_text = e.dims.map(|(w, h)| format!("{}×{}", w, h))
                                             .unwrap_or_else(|| "image".into());
-                                        let text_pos = egui::pos2(
-                                            rx + 8.0 + thumb_w + 8.0,
-                                            rect.min.y + (common::row_height() - common::text_size()) / 2.0,
-                                        );
+                                        let mono_font = FontId::new(common::text_size() * 0.85, FontFamily::Monospace);
+                                        let text_x = rx + 8.0 + container_size + 8.0;
                                         ui.painter().text(
-                                            text_pos,
-                                            egui::Align2::LEFT_TOP,
-                                            &display_text,
-                                            FontId::new(common::text_size(), FontFamily::Proportional),
-                                            text_color,
+                                            egui::pos2(text_x, rect.min.y + (common::row_height() - common::text_size()) / 2.0),
+                                            egui::Align2::LEFT_TOP, &display_text, mono_font, text_color,
                                         );
                                     } else {
-                                        let display_text = e.dims.map(|(w, h)| format!("[img {}x{}]", w, h))
-                                            .unwrap_or_else(|| "[image]".into());
+                                        let display_text = truncate(&e.text, 80);
                                         let text_pos = egui::pos2(
                                             rx + 12.0,
                                             rect.min.y + (common::row_height() - common::text_size()) / 2.0,
                                         );
-                                        ui.painter().text(
-                                            text_pos,
-                                            egui::Align2::LEFT_TOP,
-                                            &display_text,
-                                            FontId::new(common::text_size(), FontFamily::Proportional),
-                                            text_color,
-                                        );
+                                        let highlight = colors::TEXT_PRIMARY;
+                                        let indices = common::match_indices(&display_text, query);
+                                        common::paint_highlighted(ui, text_pos, &display_text, &text_font, text_color, highlight, &indices);
                                     }
-                                } else {
-                                    let display_text = truncate(&e.text, 80);
-                                    let text_pos = egui::pos2(
-                                        rx + 12.0,
-                                        rect.min.y + (common::row_height() - common::text_size()) / 2.0,
-                                    );
-                                    ui.painter().text(
-                                        text_pos,
-                                        egui::Align2::LEFT_TOP,
-                                        &display_text,
-                                        FontId::new(common::text_size(), FontFamily::Proportional),
-                                        text_color,
-                                    );
-                                }
-                            },
-                        );
+                                },
+                            );
+                            vl
+                        });
 
-                        // Paint expansion overlay only when content doesn't fit one row
-                        if selected_needs_expand {
-                            if let (Some(sel_rect), Some(&sel_idx)) = (vl.selected_rect, filtered.get(self.selected)) {
-                                let e = &entries[sel_idx];
-                                let max_content_h = common::row_height() * 8.0;
-                                let text_x = sel_rect.min.x + 12.0;
-                                let text_y = sel_rect.min.y + (common::row_height() - common::text_size()) / 2.0;
-                                let text_w = col_width - 24.0;
-                                let pad_bottom = 10.0;
-
-                                let (natural_h, text_galley) = if e.is_image {
-                                    let h = if let Some(tex) = &e.texture {
-                                        let ts = tex.size_vec2();
-                                        let scale = (text_w / ts.x).min(max_content_h / ts.y).min(1.0);
-                                        ts.y * scale
-                                    } else { 0.0 };
-                                    (h, None)
-                                } else {
-                                    let display = e.full_text.as_deref().unwrap_or(&e.text);
-                                    let galley = ui.painter().layout(
-                                        display.to_owned(),
-                                        FontId::new(common::text_size(), FontFamily::Proportional),
-                                        colors::TEXT_PRIMARY,
-                                        text_w,
-                                    );
-                                    let h = galley.size().y;
-                                    (h, Some(galley))
-                                };
-
-                                let content_h = natural_h.min(max_content_h);
-                                let overlay_h = (text_y - sel_rect.min.y) + content_h + pad_bottom;
-
-                                let overlay_rect = egui::Rect::from_min_size(
-                                    egui::pos2(sel_rect.min.x, sel_rect.min.y),
-                                    egui::vec2(col_width, overlay_h),
-                                );
-
-                                // Soft shadow below overlay
-                                for i in 0..6u8 {
-                                    let alpha = 30u8.saturating_sub(i * 5);
-                                    let y = overlay_rect.max.y + i as f32;
-                                    ui.painter().hline(
-                                        overlay_rect.min.x..=overlay_rect.max.x,
-                                        y,
-                                        egui::Stroke::new(1.0, egui::Color32::from_black_alpha(alpha)),
-                                    );
-                                }
-
-                                ui.painter().rect_filled(overlay_rect, 0.0, egui::Color32::from_rgb(12, 12, 12));
-                                ui.painter().rect_filled(overlay_rect, 0.0, colors::BG_SELECTED);
-
-                                let clip_rect = egui::Rect::from_min_max(
-                                    egui::pos2(text_x, text_y),
-                                    egui::pos2(text_x + text_w, overlay_rect.max.y - pad_bottom),
-                                );
-                                let painter = ui.painter().with_clip_rect(clip_rect);
-
-                                if e.is_image {
-                                    if let Some(tex) = &e.texture {
-                                        let ts = tex.size_vec2();
-                                        let scale = (text_w / ts.x).min(content_h / ts.y).min(1.0);
-                                        let img_rect = egui::Rect::from_min_size(
-                                            egui::pos2(text_x, text_y),
-                                            egui::vec2(ts.x * scale, ts.y * scale),
-                                        );
-                                        painter.image(
-                                            tex.id(),
-                                            img_rect,
-                                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                            egui::Color32::WHITE,
-                                        );
-                                    }
-                                } else if let Some(galley) = text_galley {
-                                    painter.galley(egui::pos2(text_x, text_y), galley, colors::TEXT_PRIMARY);
-                                }
-                            }
-                        }
-
-                        vl
-                    });
-
-                if let Some(i) = vl_output.inner.clicked {
-                    self.selected = i;
-                    self.activate();
+                    if let Some(i) = vl_output.inner.clicked {
+                        self.selected = i;
+                        self.activate();
+                    }
                 }
-
             });
-
     }
 }
 
@@ -542,7 +502,7 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result<()> {
-    let (width, height) = hyprland::window_size(0.382, 0.618, (300.0, 400.0));
+    let (width, height) = hyprland::window_size(0.618, 0.618, (500.0, 400.0));
 
     eframe::run_native(
         "clipboard",
