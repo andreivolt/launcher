@@ -444,6 +444,16 @@ impl App {
 
         if down { self.selected = (self.selected + 1).min(max_sel); }
         if up { self.selected = self.selected.saturating_sub(1); }
+        if down || up {
+            if let Some(&idx) = self.filtered.get(self.selected) {
+                if let Entry::Window { ref workspace, ref address, .. } = self.entries[idx] {
+                    hyprland::dispatch_batch_async(&[
+                        ("workspace", workspace),
+                        ("alterzorder", &format!("top,address:{}", address)),
+                    ]);
+                }
+            }
+        }
         if activate { self.activate(); return; }
 
         // Input panel
@@ -511,22 +521,12 @@ impl App {
                     0.0
                 };
                 let target_height = (header_height + list_height).min(self.max_size.1);
-                if self.last_height == 0.0 {
+                if (target_height - self.last_height).abs() > 1.0 {
                     self.last_height = target_height;
                     hyprland::dispatch_async(
                         "resizewindowpixel",
                         &format!("exact {} {},class:launcher", self.max_size.0 as i32, target_height as i32),
                     );
-                } else if (target_height - self.last_height).abs() > 0.5 {
-                    self.last_height += (target_height - self.last_height) * 0.35;
-                    if (target_height - self.last_height).abs() < 1.0 {
-                        self.last_height = target_height;
-                    }
-                    hyprland::dispatch_async(
-                        "resizewindowpixel",
-                        &format!("exact {} {},class:launcher", self.max_size.0 as i32, self.last_height as i32),
-                    );
-                    ui.ctx().request_repaint();
                 }
 
                 let visible_height = (self.max_size.1 - header_height).max(row_height);
