@@ -51,7 +51,7 @@ pub mod colors {
 pub fn panel_frame() -> Frame {
     Frame {
         fill: colors::BG_BASE,
-        corner_radius: egui::CornerRadius { nw: 0, ne: 0, sw: 12, se: 12 },
+        corner_radius: egui::CornerRadius::ZERO,
         ..Frame::NONE
     }
 }
@@ -62,7 +62,7 @@ pub fn input_frame() -> Frame {
         fill: colors::BG_INPUT,
         inner_margin: egui::Margin::symmetric(12, 12),
         outer_margin: egui::Margin { bottom: 1, ..Default::default() },
-        corner_radius: egui::CornerRadius { nw: 12, ne: 12, sw: 0, se: 0 },
+        corner_radius: egui::CornerRadius::ZERO,
         ..Frame::NONE
     }
 }
@@ -270,6 +270,10 @@ pub fn setup_transparent_style(cc: &eframe::CreationContext) {
     style.visuals.panel_fill = egui::Color32::TRANSPARENT;
     style.spacing.scroll.bar_width = 8.0;
     style.visuals.text_cursor.stroke = egui::Stroke::new(1.5, colors::ACCENT);
+    // Accent-tinted scrollbar handles
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgba_premultiplied(25, 40, 55, 60);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgba_premultiplied(40, 64, 88, 100);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgba_premultiplied(50, 80, 110, 140);
     cc.egui_ctx.set_style(style);
 
     if let Some(font_path) = find_font(font_family()) {

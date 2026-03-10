@@ -73,6 +73,17 @@ pub fn dispatch_async(cmd: &str, arg: &str) {
     });
 }
 
+/// Run multiple hyprctl dispatches atomically (non-blocking)
+pub fn dispatch_batch_async(cmds: &[(&str, &str)]) {
+    let batch: String = cmds.iter()
+        .map(|(cmd, arg)| format!("dispatch {} {}", cmd, arg))
+        .collect::<Vec<_>>()
+        .join(" ; ");
+    thread::spawn(move || {
+        let _ = Command::new("hyprctl").args(["--batch", &batch]).output();
+    });
+}
+
 /// Subscribe to Hyprland IPC event socket.
 /// Calls `callback` for each event line. Reconnects on disconnect.
 pub fn subscribe_events(callback: impl Fn(&str) + Send + 'static) -> Option<thread::JoinHandle<()>> {

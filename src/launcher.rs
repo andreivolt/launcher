@@ -235,6 +235,12 @@ impl App {
                     let prefix_bonus: u32 = if name_lower.starts_with(&query_lower)
                     { 10000 } else { 0 };
 
+                    // Bonus for matching at a word boundary in any searchable field
+                    let word_start_bonus: u32 = if e.searchable().iter().any(|s| {
+                        let s_lower = s.to_lowercase();
+                        s_lower.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(&query_lower))
+                    }) { 4000 } else { 0 };
+
                     let name_bonus: u32 = {
                         let mut buf = Vec::new();
                         let haystack = Utf32Str::new(e.name(), &mut buf);
@@ -260,7 +266,7 @@ impl App {
                         (ratio.min(1.0) * 1000.0) as u32
                     };
 
-                    let base_score = nucleo_score.max(jw_score) + prefix_bonus + name_bonus;
+                    let base_score = nucleo_score.max(jw_score) + prefix_bonus + name_bonus + word_start_bonus;
                     if base_score == 0 { return None; }
 
                     let match_score = base_score
@@ -371,6 +377,17 @@ impl App {
 
         if down { self.selected = (self.selected + 1).min(max_sel); }
         if up { self.selected = self.selected.saturating_sub(1); }
+        // Preview: switch workspace and raise the specific window behind overlay
+        if down || up {
+            if let Some(&idx) = self.filtered.get(self.selected) {
+                if let Entry::Window { ref workspace, ref address, .. } = self.entries[idx] {
+                    hyprland::dispatch_batch_async(&[
+                        ("workspace", workspace),
+                        ("alterzorder", &format!("top,address:{}", address)),
+                    ]);
+                }
+            }
+        }
         if activate { self.activate(); return; }
 
         // Input panel
@@ -379,13 +396,17 @@ impl App {
             .show(ctx, |ui: &mut Ui| {
                 let input_font = FontId::new(common::input_size(), FontFamily::Proportional);
                 let old_query = self.query.clone();
-                let input = egui::TextEdit::singleline(&mut self.query)
-                    .font(input_font.clone())
-                    .text_color(colors::TEXT_PRIMARY)
-                    .hint_text(RichText::new("Search...").color(colors::TEXT_MUTED))
-                    .frame(false)
-                    .desired_width(ui.available_width());
-                let output = input.show(ui);
+                let output = ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.label(RichText::new(">").font(input_font.clone()).color(colors::TEXT_SUBTITLE));
+                    egui::TextEdit::singleline(&mut self.query)
+                        .font(input_font.clone())
+                        .text_color(colors::TEXT_PRIMARY)
+                        .hint_text(RichText::new("Search...").color(colors::TEXT_MUTED))
+                        .frame(false)
+                        .desired_width(ui.available_width())
+                        .show(ui)
+                }).inner;
                 if ui.ctx().input(|i| i.focused) {
                     output.response.request_focus();
                 } else {
@@ -432,16 +453,28 @@ impl App {
                 let num_items = self.filtered.len().min(MAX_VISIBLE_ITEMS);
                 let list_height = if num_items > 0 {
                     num_items as f32 * row_height + (num_items - 1) as f32 * spacing_y
+                } else if !self.query.is_empty() {
+                    row_height
                 } else {
                     0.0
                 };
                 let target_height = (header_height + list_height).min(self.max_size.1);
-                if (target_height - self.last_height).abs() > 1.0 {
+                if self.last_height == 0.0 {
                     self.last_height = target_height;
                     hyprland::dispatch_async(
                         "resizewindowpixel",
                         &format!("exact {} {},class:launcher", self.max_size.0 as i32, target_height as i32),
                     );
+                } else if (target_height - self.last_height).abs() > 0.5 {
+                    self.last_height += (target_height - self.last_height) * 0.2;
+                    if (target_height - self.last_height).abs() < 1.0 {
+                        self.last_height = target_height;
+                    }
+                    hyprland::dispatch_async(
+                        "resizewindowpixel",
+                        &format!("exact {} {},class:launcher", self.max_size.0 as i32, self.last_height as i32),
+                    );
+                    ui.ctx().request_repaint();
                 }
 
                 let visible_height = (self.max_size.1 - header_height).max(row_height);
@@ -468,90 +501,94 @@ impl App {
                     }
                 }
 
-                let filtered = &self.filtered;
-                let entries = &self.entries;
-                let display_names = &self.display_names;
+                if self.filtered.is_empty() && !self.query.is_empty() {
+                    ui.add_space(row_height / 3.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new("No results").font(subtitle_font.clone()).color(colors::TEXT_MUTED));
+                    });
+                } else {
+                    let filtered = &self.filtered;
+                    let entries = &self.entries;
+                    let display_names = &self.display_names;
 
-                let vl_output = ScrollArea::vertical()
-                    .max_height(visible_height)
-                    .show(ui, |ui: &mut Ui| {
-                    virtual_list(
-                        ui,
-                        filtered.len(),
-                        row_height,
-                        self.selected,
-                        scroll_to_selected,
-                        false,
-                        |ui, i, row_rect| {
-                            let idx = filtered[i];
-                            let e = &entries[idx];
-                            let sel = i == self.selected;
-                            let text_color = if sel { colors::TEXT_PRIMARY } else { colors::TEXT_SECONDARY };
-                            let row_y = row_rect.min.y;
+                    let vl_output = ScrollArea::vertical()
+                        .max_height(visible_height)
+                        .show(ui, |ui: &mut Ui| {
+                        virtual_list(
+                            ui,
+                            filtered.len(),
+                            row_height,
+                            self.selected,
+                            scroll_to_selected,
+                            false,
+                            |ui, i, row_rect| {
+                                let idx = filtered[i];
+                                let e = &entries[idx];
+                                let sel = i == self.selected;
+                                let text_color = if sel { colors::TEXT_PRIMARY } else { colors::TEXT_SECONDARY };
+                                let row_y = row_rect.min.y;
 
-                            if let Some(tex) = e.icon() {
-                                let img_rect = egui::Rect::from_min_size(
-                                    egui::pos2(row_padding() + (icon_container() - icon_size()) / 2.0, row_y + row_padding() + (icon_container() - icon_size()) / 2.0),
-                                    egui::vec2(icon_size(), icon_size()),
-                                );
-                                ui.painter().image(
-                                    tex.id(),
-                                    img_rect,
-                                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                    Color32::WHITE,
-                                );
-                            }
+                                if let Some(tex) = e.icon() {
+                                    let img_rect = egui::Rect::from_min_size(
+                                        egui::pos2(row_padding() + (icon_container() - icon_size()) / 2.0, row_y + row_padding() + (icon_container() - icon_size()) / 2.0),
+                                        egui::vec2(icon_size(), icon_size()),
+                                    );
+                                    ui.painter().image(
+                                        tex.id(),
+                                        img_rect,
+                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                        Color32::WHITE,
+                                    );
+                                }
 
-                            let display_name = display_names.get(&idx).map(|s| s.as_str()).unwrap_or(e.name());
-                            if let Some(sub) = e.subtitle() {
-                                // Window: title (primary, large) + class (subtitle, small)
-                                let right_margin = icon_container() + row_padding() * 2.0;
-                                let avail = content_width - text_x - right_margin;
-                                let title_display = truncate_to_width(ui, sub, text_font.clone(), avail);
-                                let total_h = text_size + line_gap + subtitle_size;
-                                let primary_y = row_y + (row_height - total_h) / 2.0;
-                                ui.painter().text(
-                                    egui::pos2(text_x, primary_y),
-                                    egui::Align2::LEFT_TOP,
-                                    title_display,
-                                    text_font.clone(),
-                                    text_color,
-                                );
-                                let sub_color = if sel { colors::TEXT_SECONDARY } else { colors::TEXT_SUBTITLE };
-                                ui.painter().text(
-                                    egui::pos2(text_x, primary_y + text_size + line_gap),
-                                    egui::Align2::LEFT_TOP,
-                                    display_name,
-                                    subtitle_font.clone(),
-                                    sub_color,
-                                );
-                            } else {
-                                let text_y = row_y + (row_height - text_size) / 2.0;
-                                ui.painter().text(
-                                    egui::pos2(text_x, text_y),
-                                    egui::Align2::LEFT_TOP,
-                                    display_name,
-                                    text_font.clone(),
-                                    text_color,
-                                );
-                            }
+                                let display_name = display_names.get(&idx).map(|s| s.as_str()).unwrap_or(e.name());
+                                if let Some(sub) = e.subtitle() {
+                                    let right_margin = icon_container() + row_padding() * 2.0;
+                                    let avail = content_width - text_x - right_margin;
+                                    let title_display = truncate_to_width(ui, sub, text_font.clone(), avail);
+                                    let total_h = text_size + line_gap + subtitle_size;
+                                    let primary_y = row_y + (row_height - total_h) / 2.0;
+                                    ui.painter().text(
+                                        egui::pos2(text_x, primary_y),
+                                        egui::Align2::LEFT_TOP,
+                                        title_display,
+                                        text_font.clone(),
+                                        text_color,
+                                    );
+                                    let sub_color = if sel { colors::TEXT_SECONDARY } else { colors::TEXT_SUBTITLE };
+                                    ui.painter().text(
+                                        egui::pos2(text_x, primary_y + text_size + line_gap),
+                                        egui::Align2::LEFT_TOP,
+                                        display_name,
+                                        subtitle_font.clone(),
+                                        sub_color,
+                                    );
+                                } else {
+                                    let text_y = row_y + (row_height - text_size) / 2.0;
+                                    ui.painter().text(
+                                        egui::pos2(text_x, text_y),
+                                        egui::Align2::LEFT_TOP,
+                                        display_name,
+                                        text_font.clone(),
+                                        text_color,
+                                    );
+                                }
 
-                            if e.is_window() {
-                                let circle_center = egui::pos2(
-                                    content_width - row_padding() - icon_container() / 2.0,
-                                    row_y + row_height / 2.0,
-                                );
-                                let circle_r = 3.0;
-                                let dot_color = colors::ACCENT;
-                                ui.painter().circle_filled(circle_center, circle_r, dot_color);
-                            }
-                        },
-                    )
-                }).inner;
+                                if e.is_window() {
+                                    let circle_center = egui::pos2(
+                                        content_width - row_padding() - icon_container() / 2.0,
+                                        row_y + row_height / 2.0,
+                                    );
+                                    ui.painter().circle_filled(circle_center, 3.0, colors::ACCENT);
+                                }
+                            },
+                        )
+                    }).inner;
 
-                if let Some(i) = vl_output.clicked {
-                    self.selected = i;
-                    self.activate();
+                    if let Some(i) = vl_output.clicked {
+                        self.selected = i;
+                        self.activate();
+                    }
                 }
             });
     }
