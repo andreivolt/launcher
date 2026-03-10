@@ -64,6 +64,7 @@ enum Entry {
         address: String,
         workspace: String,
         icon: Option<egui::TextureHandle>,
+        focus_history_id: i32,
     },
 }
 
@@ -224,7 +225,26 @@ impl App {
                         { 5000 } else { 0 }
                     };
 
-                    let match_score = nucleo_score.max(jw_score) + prefix_bonus + name_bonus;
+                    // Open windows rank above desktop entries for same app
+                    let window_bonus: u32 = if e.is_window() { 3000 } else { 0 };
+
+                    // Recently focused windows rank higher (skip current, you're switching away)
+                    let recency_bonus: u32 = match e {
+                        Entry::Window { focus_history_id, .. } if *focus_history_id > 0 => {
+                            2000 / (*focus_history_id as u32)
+                        }
+                        _ => 0,
+                    };
+
+                    // Shorter names rank higher (query coverage ratio)
+                    let length_bonus: u32 = {
+                        let ratio = query_lower.len() as f32 / name_lower.len().max(1) as f32;
+                        (ratio.min(1.0) * 1000.0) as u32
+                    };
+
+                    let match_score = nucleo_score.max(jw_score)
+                        + prefix_bonus + name_bonus
+                        + window_bonus + recency_bonus + length_bonus;
                     if match_score == 0 { return None; }
                     Some((match_score, idx))
                 })
@@ -556,6 +576,7 @@ fn collect_hyprland_windows(ctx: &Context, icon_index: &HashMap<String, PathBuf>
                 address: c.address,
                 workspace,
                 icon,
+                focus_history_id: c.focus_history_id,
             }
         })
         .collect()
