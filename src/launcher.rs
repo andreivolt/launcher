@@ -393,6 +393,15 @@ impl App {
                 }
                 if self.query != old_query { self.filter(); }
 
+                // Move cursor to end after ghost text acceptance
+                if accept_ghost {
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), output.response.id) {
+                        let ccursor = egui::text::CCursor::new(self.query.chars().count());
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
+                        state.store(ui.ctx(), output.response.id);
+                    }
+                }
+
                 if !self.ghost_text_cache.is_empty() && !self.query.is_empty() {
                     let mut job = egui::text::LayoutJob::default();
                     job.append(&self.query, 0.0, egui::TextFormat {
