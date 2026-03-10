@@ -121,6 +121,7 @@ struct App {
     should_hide: bool,
     activated_window: bool,
     loaded: bool,
+    was_focused: bool,
     held_key: Option<(egui::Key, std::time::Instant)>,
     matcher: Matcher,
     needs_reload: Arc<AtomicBool>,
@@ -147,6 +148,7 @@ impl App {
             should_hide: false,
             activated_window: false,
             loaded: false,
+            was_focused: false,
             held_key: None,
             matcher: Matcher::new(Config::DEFAULT),
             needs_reload: Arc::new(AtomicBool::new(false)),
@@ -554,13 +556,20 @@ impl eframe::App for App {
             self.setup_hyprland_events(ctx);
         }
 
+        let focused = ctx.input(|i| i.focused);
+
         // Render content when unfocused but skip input processing
-        if !ctx.input(|i| i.focused) {
+        if !focused {
+            self.was_focused = false;
             self.render(ctx);
             return;
         }
 
-        if self.needs_reload.swap(false, Ordering::SeqCst) {
+        // Reload entries on focus gain (fresh focus_history_ids)
+        if !self.was_focused {
+            self.was_focused = true;
+            self.load_entries(ctx);
+        } else if self.needs_reload.swap(false, Ordering::SeqCst) {
             self.load_entries(ctx);
         }
 
