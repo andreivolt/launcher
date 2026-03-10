@@ -190,9 +190,20 @@ impl App {
         self.loaded = true;
     }
 
+    fn default_order(&self) -> Vec<usize> {
+        let mut indices: Vec<usize> = (0..self.entries.len().min(50)).collect();
+        // Previously focused windows first, current window last (you're switching away)
+        indices.sort_by_key(|&i| match &self.entries[i] {
+            Entry::Window { focus_history_id, .. } if *focus_history_id == 0 => (1, 0),
+            Entry::Window { focus_history_id, .. } => (0, *focus_history_id),
+            Entry::Desktop { .. } => (2, i as i32),
+        });
+        indices
+    }
+
     fn filter(&mut self) {
         if self.query.is_empty() {
-            self.filtered = (0..self.entries.len().min(50)).collect();
+            self.filtered = self.default_order();
         } else {
             let pattern = Pattern::parse(&self.query, CaseMatching::Ignore, Normalization::Smart);
             let query_lower = self.query.to_lowercase();
@@ -318,7 +329,7 @@ impl App {
     fn hide_and_reset(&mut self) {
         self.query.clear();
         self.selected = 0;
-        self.filtered = (0..self.entries.len().min(50)).collect();
+        self.filtered = self.default_order();
         self.should_hide = false;
         if !self.activated_window {
             hyprland::dispatch_async("togglespecialworkspace", "launcher");
