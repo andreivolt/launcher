@@ -60,7 +60,7 @@ pub fn panel_frame() -> Frame {
 pub fn input_frame() -> Frame {
     Frame {
         fill: colors::BG_INPUT,
-        inner_margin: egui::Margin::symmetric(10, 8),
+        inner_margin: egui::Margin::symmetric(12, 12),
         outer_margin: egui::Margin { bottom: 1, ..Default::default() },
         corner_radius: egui::CornerRadius { nw: 12, ne: 12, sw: 0, se: 0 },
         ..Frame::NONE
@@ -269,6 +269,7 @@ pub fn setup_transparent_style(cc: &eframe::CreationContext) {
     style.visuals.window_fill = egui::Color32::TRANSPARENT;
     style.visuals.panel_fill = egui::Color32::TRANSPARENT;
     style.spacing.scroll.bar_width = 8.0;
+    style.visuals.text_cursor.stroke = egui::Stroke::new(1.5, colors::ACCENT);
     cc.egui_ctx.set_style(style);
 
     if let Some(font_path) = find_font(font_family()) {
