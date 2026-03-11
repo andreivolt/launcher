@@ -101,8 +101,8 @@
                 rules = cls: ''
                   windowrule = workspace special:${cls} silent, match:class ${cls}
                   windowrule = float on, match:class ${cls}
-                  windowrule = noborder on, match:class ${cls}
-                  windowrule = noshadow on, match:class ${cls}
+                  windowrule = border_size 0, match:class ${cls}
+                  windowrule = no_shadow on, match:class ${cls}
                   windowrule = move (monitor_w/2-window_w/2) (monitor_h*0.236), match:class ${cls}
                 '';
               in rules "launcher" + rules "clipboard";
