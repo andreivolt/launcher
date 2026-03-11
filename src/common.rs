@@ -1,6 +1,7 @@
 //! Shared constants and utilities for launcher and clipboard
 
 use eframe::egui::{self, Color32, Context, FontFamily, FontId, Frame, RichText, Sense, Ui, Rect};
+use eframe::epaint::Mesh;
 use std::sync::OnceLock;
 
 pub const GOLDEN: f32 = 1.618;
@@ -23,28 +24,30 @@ pub fn font_family() -> &'static str {
     })
 }
 
-pub fn input_size() -> f32 { text_size() * GOLDEN }
-pub fn row_height() -> f32 { (text_size() * 1.75).round() }
+pub fn input_size() -> f32 { text_size() * 1.35 }
+pub fn row_height() -> f32 { (text_size() * 1.5).round() }
+/// Icon/prompt container: square area for row icons and the input `>` glyph
+pub fn icon_container() -> f32 { (text_size() * 1.5).round() + 4.0 }
 
 // Key repeat timing
 pub const REPEAT_DELAY_MS: u128 = 300;
 pub const REPEAT_INTERVAL_MS: u128 = 120;
 
-// Colors
+// Colors — monochrome with single cool-white accent
 pub mod colors {
     use eframe::egui::Color32;
     pub const BG_BASE: Color32 = Color32::from_rgb(0, 0, 0);
-    pub const BG_INPUT: Color32 = Color32::from_rgb(16, 16, 16);
-    pub const BG_SELECTED: Color32 = Color32::from_rgb(24, 24, 28);
-    pub const BG_HOVER: Color32 = Color32::from_rgb(12, 12, 14);
-    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(255, 255, 255);
-    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(170, 170, 170);
-    pub const TEXT_SUBTITLE: Color32 = Color32::from_rgb(100, 100, 100);
-    pub const TEXT_MUTED: Color32 = Color32::from_rgb(60, 60, 60);
-    pub const GHOST_TEXT: Color32 = Color32::from_rgb(40, 40, 40);
-    pub const BG_PREVIEW: Color32 = Color32::from_rgb(16, 16, 16);
-    pub const ACCENT: Color32 = Color32::from_rgb(100, 160, 220);
-    pub const ACCENT_BAR: f32 = 2.5;
+    pub const BG_INPUT: Color32 = Color32::from_rgb(8, 8, 8);
+    pub const BG_SELECTED: Color32 = Color32::from_rgb(18, 18, 20);
+    pub const BG_HOVER: Color32 = Color32::from_rgb(10, 10, 11);
+    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(210, 210, 210);
+    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(120, 120, 120);
+    pub const TEXT_SUBTITLE: Color32 = Color32::from_rgb(70, 70, 70);
+    pub const TEXT_MUTED: Color32 = Color32::from_rgb(45, 45, 45);
+    pub const GHOST_TEXT: Color32 = Color32::from_rgb(35, 35, 35);
+    pub const BG_PREVIEW: Color32 = Color32::from_rgb(8, 8, 8);
+    pub const ACCENT: Color32 = Color32::from_rgb(200, 160, 60);
+    pub const ACCENT_BAR: f32 = 1.5;
 }
 
 /// Panel frame with semi-transparent dark background
@@ -56,12 +59,12 @@ pub fn panel_frame() -> Frame {
     }
 }
 
-/// Input field frame - clean padding, no background
+/// Input field frame — tight padding
 pub fn input_frame() -> Frame {
     Frame {
         fill: colors::BG_INPUT,
-        inner_margin: egui::Margin::symmetric(12, 12),
-        outer_margin: egui::Margin { bottom: 1, ..Default::default() },
+        inner_margin: egui::Margin::symmetric(8, 7),
+        outer_margin: egui::Margin { bottom: 0, ..Default::default() },
         corner_radius: egui::CornerRadius::ZERO,
         ..Frame::NONE
     }
@@ -103,8 +106,21 @@ pub fn input_panel(
             let input_font = FontId::new(input_size(), FontFamily::Proportional);
             let old_query = query.clone();
             let output = ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                ui.label(RichText::new(">").font(input_font.clone()).color(colors::TEXT_SUBTITLE));
+                ui.spacing_mut().item_spacing.x = 10.0;
+                // Prompt glyph centered in icon_container-sized area
+                let container = icon_container();
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(container, container),
+                    Sense::hover(),
+                );
+                let prompt_font = FontId::new(input_size(), FontFamily::Proportional);
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    ">",
+                    prompt_font,
+                    colors::TEXT_SUBTITLE,
+                );
                 egui::TextEdit::singleline(query)
                     .font(input_font.clone())
                     .text_color(colors::TEXT_PRIMARY)
@@ -142,12 +158,12 @@ pub fn input_panel(
     InputPanelOutput { response, changed, cleared, text_edit_id }
 }
 
-/// Preview pane frame with subtle background lift
+/// Preview pane frame
 pub fn preview_frame() -> Frame {
     Frame {
         fill: colors::BG_PREVIEW,
-        corner_radius: egui::CornerRadius::same(6),
-        inner_margin: egui::Margin::same(10),
+        corner_radius: egui::CornerRadius::same(4),
+        inner_margin: egui::Margin::same(8),
         ..Frame::NONE
     }
 }
@@ -343,12 +359,12 @@ pub fn setup_transparent_style(cc: &eframe::CreationContext) {
     let mut style = egui::Style::default();
     style.visuals.window_fill = egui::Color32::TRANSPARENT;
     style.visuals.panel_fill = egui::Color32::TRANSPARENT;
-    style.spacing.scroll.bar_width = 8.0;
-    style.visuals.text_cursor.stroke = egui::Stroke::new(1.5, colors::ACCENT);
-    // Accent-tinted scrollbar handles
-    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgba_premultiplied(25, 40, 55, 60);
-    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgba_premultiplied(40, 64, 88, 100);
-    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgba_premultiplied(50, 80, 110, 140);
+    style.spacing.scroll.bar_width = 4.0;
+    style.visuals.text_cursor.stroke = egui::Stroke::new(1.0, colors::ACCENT);
+    // Minimal scrollbar
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgba_premultiplied(40, 40, 40, 40);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgba_premultiplied(60, 60, 60, 80);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgba_premultiplied(80, 80, 80, 100);
     cc.egui_ctx.set_style(style);
 
     if let Some(font_path) = find_font(font_family()) {
@@ -477,4 +493,33 @@ pub fn truncate(s: &str, max: usize) -> String {
     } else {
         s
     }
+}
+
+/// Paint fade gradients at top and bottom edges of a scroll area.
+/// Call after rendering the scroll area content, passing the scroll area's outer rect.
+pub fn paint_scroll_fade(ui: &Ui, rect: Rect, fade_h: f32) {
+    let base = colors::BG_BASE;
+    let transparent = Color32::from_rgba_premultiplied(0, 0, 0, 0);
+
+    // Top fade
+    let top = Rect::from_min_max(rect.left_top(), egui::pos2(rect.right(), rect.top() + fade_h));
+    let mut top_mesh = Mesh::default();
+    top_mesh.colored_vertex(top.left_top(), base);
+    top_mesh.colored_vertex(top.right_top(), base);
+    top_mesh.colored_vertex(top.right_bottom(), transparent);
+    top_mesh.colored_vertex(top.left_bottom(), transparent);
+    top_mesh.add_triangle(0, 1, 2);
+    top_mesh.add_triangle(0, 2, 3);
+    ui.painter().add(egui::Shape::mesh(top_mesh));
+
+    // Bottom fade
+    let bot = Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - fade_h), rect.right_bottom());
+    let mut bot_mesh = Mesh::default();
+    bot_mesh.colored_vertex(bot.left_top(), transparent);
+    bot_mesh.colored_vertex(bot.right_top(), transparent);
+    bot_mesh.colored_vertex(bot.right_bottom(), base);
+    bot_mesh.colored_vertex(bot.left_bottom(), base);
+    bot_mesh.add_triangle(0, 1, 2);
+    bot_mesh.add_triangle(0, 2, 3);
+    ui.painter().add(egui::Shape::mesh(bot_mesh));
 }
