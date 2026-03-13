@@ -3,13 +3,14 @@
 use eframe::egui::{self, CentralPanel, Context, Color32, ScrollArea, Ui, FontFamily, FontId};
 use launcher::common::{self, colors, handle_navigation_keys, virtual_list};
 use launcher::scroll::ScrollMomentum;
+use launcher::usage::UsageLog;
 use launcher::{desktop, hyprland};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{env, fs};
 use strsim::jaro_winkler;
@@ -64,7 +65,6 @@ enum Entry {
         address: String,
         workspace: String,
         icon: Option<egui::TextureHandle>,
-        focus_history_id: i32,
     },
 }
 
@@ -94,14 +94,19 @@ impl Entry {
         matches!(self, Entry::Window { .. })
     }
 
-    fn searchable(&self) -> Vec<&str> {
+    /// Primary fields (name, title, class) — full weight in scoring
+    fn primary_fields(&self) -> Vec<&str> {
         match self {
-            Entry::Desktop { name, keywords, .. } => {
-                let mut v = vec![name.as_str()];
-                v.extend(keywords.iter().map(|s| s.as_str()));
-                v
-            }
+            Entry::Desktop { name, .. } => vec![name.as_str()],
             Entry::Window { title, class, .. } => vec![title.as_str(), class.as_str()],
+        }
+    }
+
+    /// Secondary fields (keywords, generic name) — reduced weight in scoring
+    fn secondary_fields(&self) -> Vec<&str> {
+        match self {
+            Entry::Desktop { keywords, .. } => keywords.iter().map(|s| s.as_str()).collect(),
+            Entry::Window { .. } => vec![],
         }
     }
 }
@@ -122,6 +127,7 @@ struct App {
     scroll_momentum: ScrollMomentum,
     max_size: (f32, f32),
     last_height: f32,
+    usage: Arc<Mutex<UsageLog>>,
     // Caches
     ghost_text_cache: String,
     display_names: HashMap<usize, String>,
@@ -149,6 +155,7 @@ impl App {
             scroll_momentum: ScrollMomentum::new(),
             max_size,
             last_height: 0.0,
+            usage: Arc::new(Mutex::new(UsageLog::load())),
             ghost_text_cache: String::new(),
             display_names: HashMap::new(),
             last_content_width: 0.0,
@@ -157,15 +164,38 @@ impl App {
 
     fn setup_hyprland_events(&mut self, ctx: &Context) {
         let needs_reload = self.needs_reload.clone();
+        let usage = self.usage.clone();
         let ctx = ctx.clone();
+
+        let mut active_class: Option<String> = None;
+        let mut focused_at: f64 = 0.0;
 
         self._hypr_thread = hyprland::subscribe_events(move |line| {
             if line.starts_with("openwindow>>") || line.starts_with("closewindow>>") {
                 needs_reload.store(true, Ordering::SeqCst);
                 ctx.request_repaint();
             } else if line.starts_with("windowtitle>>") || line.starts_with("movewindow>>") {
-                // Mark for reload but don't repaint - will refresh when focused
                 needs_reload.store(true, Ordering::SeqCst);
+            } else if let Some(rest) = line.strip_prefix("activewindow>>") {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+
+                // Record focus duration for the previous window
+                if let Some(prev) = active_class.take() {
+                    let duration = now - focused_at;
+                    if let Ok(mut u) = usage.lock() {
+                        u.record_focus(&prev, duration);
+                    }
+                }
+
+                // Track the newly focused window
+                let class = rest.split(',').next().unwrap_or("").to_string();
+                if !class.is_empty() && class != "launcher" {
+                    active_class = Some(class);
+                    focused_at = now;
+                }
             }
         });
     }
@@ -186,84 +216,118 @@ impl App {
     }
 
     fn default_order(&self) -> Vec<usize> {
-        let mut indices: Vec<usize> = (0..self.entries.len().min(50)).collect();
-        // Previously focused windows first; skip fhid 0 (launcher) and 1 (window you just left)
-        indices.sort_by_key(|&i| match &self.entries[i] {
-            Entry::Window { focus_history_id, .. } if *focus_history_id <= 1 => (1, *focus_history_id),
-            Entry::Window { focus_history_id, .. } => (0, *focus_history_id),
-            Entry::Desktop { .. } => (2, i as i32),
-        });
-        indices
+        let usage = self.usage.lock().unwrap();
+        let mut scored: Vec<(f64, usize)> = (0..self.entries.len().min(50))
+            .map(|i| (usage.score(self.entries[i].name()), i))
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.into_iter().map(|(_, i)| i).collect()
     }
 
     fn filter(&mut self) {
         if self.query.is_empty() {
             self.filtered = self.default_order();
         } else {
-            let pattern = Pattern::parse(&self.query, CaseMatching::Ignore, Normalization::Smart);
+            let usage = self.usage.lock().unwrap();
             let query_lower = self.query.to_lowercase();
+            let tokens: Vec<&str> = query_lower.split_whitespace().collect();
+            let is_multi = tokens.len() > 1;
+
+            // Primary token (first word) drives main scoring
+            let primary_token = tokens[0];
+            let pattern = Pattern::parse(primary_token, CaseMatching::Ignore, Normalization::Smart);
+
+            // Additional tokens for AND filtering
+            let extra_patterns: Vec<Pattern> = tokens[1..].iter()
+                .map(|t| Pattern::parse(t, CaseMatching::Ignore, Normalization::Smart))
+                .collect();
 
             let mut scored: Vec<_> = self.entries.iter().enumerate()
                 .filter_map(|(idx, e)| {
-                    let nucleo_score: u32 = e.searchable().iter()
-                        .filter_map(|s| {
-                            let mut buf = Vec::new();
-                            let haystack = Utf32Str::new(s, &mut buf);
-                            pattern.score(haystack, &mut self.matcher)
-                        })
-                        .max()
-                        .unwrap_or(0);
+                    let primary = e.primary_fields();
+                    let secondary = e.secondary_fields();
+                    let all_fields: Vec<&str> = primary.iter().chain(secondary.iter()).copied().collect();
 
-                    let jw_score: u32 = if nucleo_score == 0 {
-                        e.searchable().iter()
-                            .map(|s| (jaro_winkler(&query_lower, &s.to_lowercase()) * 1000.0) as u32)
-                            .filter(|&s| s >= 850)
+                    // Multi-word AND: all extra tokens must match somewhere
+                    if is_multi {
+                        for ep in &extra_patterns {
+                            let matched = all_fields.iter().any(|s| {
+                                let mut buf = Vec::new();
+                                let haystack = Utf32Str::new(s, &mut buf);
+                                ep.score(haystack, &mut self.matcher).unwrap_or(0) > 0
+                            }) || all_fields.iter().any(|s| {
+                                let sl = s.to_lowercase();
+                                tokens[1..].iter().any(|t| sl.contains(t))
+                            });
+                            if !matched { return None; }
+                        }
+                    }
+
+                    // Score primary token against fields
+                    let score_pat = |fields: &[&str], pat: &Pattern, m: &mut Matcher| -> u32 {
+                        fields.iter()
+                            .filter_map(|s| {
+                                let mut buf = Vec::new();
+                                let haystack = Utf32Str::new(s, &mut buf);
+                                pat.score(haystack, m)
+                            })
                             .max()
                             .unwrap_or(0)
-                    } else {
-                        0
                     };
+
+                    let primary_score = score_pat(&primary, &pattern, &mut self.matcher);
+                    let primary_jw = if primary_score == 0 {
+                        primary.iter()
+                            .map(|s| (jaro_winkler(primary_token, &s.to_lowercase()) * 1000.0) as u32)
+                            .filter(|&s| s >= 850).max().unwrap_or(0)
+                    } else { 0 };
+
+                    let secondary_score = (score_pat(&secondary, &pattern, &mut self.matcher) as f32 * 0.3) as u32;
+                    let secondary_jw = if secondary_score == 0 {
+                        (secondary.iter()
+                            .map(|s| (jaro_winkler(primary_token, &s.to_lowercase()) * 1000.0) as u32)
+                            .filter(|&s| s >= 850).max().unwrap_or(0) as f32 * 0.3) as u32
+                    } else { 0 };
+
+                    let nucleo_score = primary_score.max(secondary_score);
+                    let jw_score = primary_jw.max(secondary_jw);
 
                     let name_lower = e.name().to_lowercase();
-                    let prefix_bonus: u32 = if name_lower.starts_with(&query_lower)
+                    let prefix_bonus: u32 = if name_lower.starts_with(primary_token)
                     { 10000 } else { 0 };
 
-                    // Bonus for matching at a word boundary in any searchable field
-                    let word_start_bonus: u32 = if e.searchable().iter().any(|s| {
+                    let word_start_bonus: u32 = if primary.iter().any(|s| {
                         let s_lower = s.to_lowercase();
-                        s_lower.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(&query_lower))
+                        s_lower.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(primary_token))
                     }) { 4000 } else { 0 };
 
-                    let name_bonus: u32 = {
-                        let mut buf = Vec::new();
-                        let haystack = Utf32Str::new(e.name(), &mut buf);
-                        if pattern.score(haystack, &mut self.matcher).unwrap_or(0) > 0
-                            || name_lower.contains(&query_lower)
-                        { 5000 } else { 0 }
-                    };
+                    let name_bonus: u32 = if primary_score > 0 || name_lower.contains(primary_token)
+                    { 5000 } else { 0 };
 
-                    // Open windows rank above desktop entries for same app
-                    let window_bonus: u32 = if e.is_window() { 3000 } else { 0 };
+                    // Usage-based bonus: frecency score capped at 5000
+                    let usage_bonus: u32 = (usage.score(e.name()).min(50.0) * 100.0) as u32;
 
-                    // Recently focused windows rank higher (skip launcher=0 and just-left=1)
-                    let recency_bonus: u32 = match e {
-                        Entry::Window { focus_history_id, .. } if *focus_history_id > 1 => {
-                            2000 / (*focus_history_id as u32 - 1)
-                        }
-                        _ => 0,
-                    };
+                    // Query-specific frecency: boost entries previously chosen for this query
+                    let query_bonus: u32 = (usage.query_score(&self.query, e.name()).min(10.0) * 500.0) as u32;
 
-                    // Shorter names rank higher (query coverage ratio)
                     let length_bonus: u32 = {
-                        let ratio = query_lower.len() as f32 / name_lower.len().max(1) as f32;
+                        let ratio = primary_token.len() as f32 / name_lower.len().max(1) as f32;
                         (ratio.min(1.0) * 1000.0) as u32
                     };
 
                     let base_score = nucleo_score.max(jw_score) + prefix_bonus + name_bonus + word_start_bonus;
                     if base_score == 0 { return None; }
 
-                    let match_score = base_score
-                        + window_bonus + recency_bonus + length_bonus;
+                    // Filter scattered fuzzy matches: require substring or minimum score
+                    if !is_multi {
+                        let has_substring = all_fields.iter()
+                            .any(|s| s.to_lowercase().contains(&query_lower));
+                        if !has_substring && base_score < query_lower.len() as u32 * 20 {
+                            return None;
+                        }
+                    }
+
+                    let match_score = base_score + usage_bonus + query_bonus + length_bonus;
                     Some((match_score, idx))
                 })
                 .collect();
@@ -272,7 +336,7 @@ impl App {
             self.filtered = scored.into_iter().map(|(_, idx)| idx).take(50).collect();
         }
         self.selected = 0;
-        self.display_names.clear(); // Invalidate truncation cache
+        self.display_names.clear();
         self.update_ghost_text();
     }
 
@@ -294,6 +358,15 @@ impl App {
     fn activate(&mut self) {
         if let Some(&idx) = self.filtered.get(self.selected) {
             let e = &self.entries[idx];
+
+            // Record activation in usage log
+            if let Ok(mut usage) = self.usage.lock() {
+                usage.record_launch(e.name());
+                if !self.query.is_empty() {
+                    usage.record_selection(&self.query, e.name());
+                }
+            }
+
             match e {
                 Entry::Desktop { exec, terminal, .. } => {
                     let parts: Vec<&str> = exec.split_whitespace()
@@ -329,6 +402,9 @@ impl App {
     }
 
     fn hide_and_reset(&mut self) {
+        if let Ok(mut usage) = self.usage.lock() {
+            usage.save();
+        }
         self.query.clear();
         self.selected = 0;
         self.filtered = self.default_order();
@@ -633,7 +709,6 @@ fn collect_hyprland_windows(ctx: &Context, icon_index: &HashMap<String, PathBuf>
                 address: c.address,
                 workspace,
                 icon,
-                focus_history_id: c.focus_history_id,
             }
         })
         .collect()
