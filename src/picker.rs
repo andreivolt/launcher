@@ -184,10 +184,10 @@ impl eframe::App for App {
                 let target_height = (header_height + list_height).min(self.max_size.1);
                 if (target_height - self.last_height).abs() > 1.0 {
                     self.last_height = target_height;
-                    hyprland::dispatch_async(
-                        "resizewindowpixel",
-                        &format!("exact {} {},class:picker", self.max_size.0 as i32, target_height as i32),
-                    );
+                    hyprland::dispatch_async(&format!(
+                        r#"hl.dsp.window.resize({{ x = {}, y = {}, window = "class:picker" }})"#,
+                        self.max_size.0 as i32, target_height as i32,
+                    ));
                 }
 
                 let visible_height = (self.max_size.1 - header_height).max(row_height);

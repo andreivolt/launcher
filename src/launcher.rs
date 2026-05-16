@@ -393,7 +393,7 @@ impl App {
                     }
                 }
                 Entry::Window { address, .. } => {
-                    hyprland::dispatch("focuswindow", &format!("address:{}", address));
+                    hyprland::dispatch(&format!(r#"hl.dsp.focus({{ window = "address:{address}" }})"#));
                     self.activated_window = true;
                 }
             }
@@ -410,7 +410,7 @@ impl App {
         self.filtered = self.default_order();
         self.should_hide = false;
         if !self.activated_window {
-            hyprland::dispatch_async("togglespecialworkspace", "launcher");
+            hyprland::dispatch_async(r#"hl.dsp.workspace.toggle_special("launcher")"#);
         }
         self.activated_window = false;
     }
@@ -459,8 +459,8 @@ impl App {
             if let Some(&idx) = self.filtered.get(self.selected) {
                 if let Entry::Window { ref workspace, ref address, .. } = self.entries[idx] {
                     hyprland::dispatch_batch_async(&[
-                        ("workspace", workspace),
-                        ("alterzorder", &format!("top,address:{}", address)),
+                        format!(r#"hl.dsp.focus({{ workspace = "{workspace}" }})"#),
+                        format!(r#"hl.dsp.window.alter_zorder({{ mode = "top", window = "address:{address}" }})"#),
                     ]);
                 }
             }
@@ -501,10 +501,10 @@ impl App {
                 let target_height = (header_height + list_height).min(self.max_size.1);
                 if (target_height - self.last_height).abs() > 1.0 {
                     self.last_height = target_height;
-                    hyprland::dispatch_async(
-                        "resizewindowpixel",
-                        &format!("exact {} {},class:launcher", self.max_size.0 as i32, target_height as i32),
-                    );
+                    hyprland::dispatch_async(&format!(
+                        r#"hl.dsp.window.resize({{ x = {}, y = {}, window = "class:launcher" }})"#,
+                        self.max_size.0 as i32, target_height as i32,
+                    ));
                 }
 
                 let visible_height = (self.max_size.1 - header_height).max(row_height);

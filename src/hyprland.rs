@@ -61,24 +61,24 @@ pub fn clients() -> Vec<Client> {
     clients
 }
 
-/// Run hyprctl dispatch (blocking)
-pub fn dispatch(cmd: &str, arg: &str) {
-    let _ = Command::new("hyprctl").args(["dispatch", cmd, arg]).output();
+/// Run a Lua dispatch expression via hyprctl (blocking).
+/// `expr` is a Lua dispatcher value, e.g. `hl.dsp.window.float({})`.
+pub fn dispatch(expr: &str) {
+    let _ = Command::new("hyprctl").args(["dispatch", expr]).output();
 }
 
-/// Run hyprctl dispatch (non-blocking)
-pub fn dispatch_async(cmd: &str, arg: &str) {
-    let cmd = cmd.to_owned();
-    let arg = arg.to_owned();
+/// Run a Lua dispatch expression via hyprctl (non-blocking).
+pub fn dispatch_async(expr: &str) {
+    let expr = expr.to_owned();
     thread::spawn(move || {
-        let _ = Command::new("hyprctl").args(["dispatch", &cmd, &arg]).output();
+        let _ = Command::new("hyprctl").args(["dispatch", &expr]).output();
     });
 }
 
-/// Run multiple hyprctl dispatches atomically (non-blocking)
-pub fn dispatch_batch_async(cmds: &[(&str, &str)]) {
-    let batch: String = cmds.iter()
-        .map(|(cmd, arg)| format!("dispatch {} {}", cmd, arg))
+/// Run multiple Lua dispatch expressions atomically (non-blocking).
+pub fn dispatch_batch_async(exprs: &[String]) {
+    let batch = exprs.iter()
+        .map(|e| format!("dispatch {e}"))
         .collect::<Vec<_>>()
         .join(" ; ");
     thread::spawn(move || {
