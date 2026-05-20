@@ -50,6 +50,27 @@ pub fn window_size(w_ratio: f32, h_ratio: f32, fallback: (f32, f32)) -> (f32, f3
         .unwrap_or(fallback)
 }
 
+/// Get the active monitor's logical (post-scale) dimensions, matching the
+/// coordinate space used by `hl.dsp.window.move/resize`. Falls back to (0, 0).
+pub fn monitor_logical_size() -> (f32, f32) {
+    monitor()
+        .map(|m| ((m.width / m.scale) as f32, (m.height / m.scale) as f32))
+        .unwrap_or((0.0, 0.0))
+}
+
+/// Resize a quake-style overlay and pin its top edge to a fixed Y, so the
+/// input field stays put as the result list grows/shrinks. Horizontal
+/// position stays centered. Runs as one hyprctl batch so resize+move land
+/// atomically (no flicker / no transient recentering).
+pub fn resize_anchored(class: &str, width: i32, height: i32, monitor_w: f32, monitor_h: f32, y_ratio: f32) {
+    let x = ((monitor_w - width as f32) * 0.5).round() as i32;
+    let y = (monitor_h * y_ratio).round() as i32;
+    dispatch_batch_async(&[
+        format!(r#"hl.dsp.window.resize({{ x = {width}, y = {height}, window = "class:{class}" }})"#),
+        format!(r#"hl.dsp.window.move({{ x = {x}, y = {y}, window = "class:{class}" }})"#),
+    ]);
+}
+
 /// Get sorted list of Hyprland clients (by focus history)
 pub fn clients() -> Vec<Client> {
     let Some(out) = Command::new("hyprctl").args(["clients", "-j"]).output().ok() else {

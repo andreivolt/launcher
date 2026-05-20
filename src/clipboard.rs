@@ -68,6 +68,7 @@ struct App {
     scroll_momentum: ScrollMomentum,
     last_ensured: Option<usize>,
     max_size: (f32, f32),
+    monitor_size: (f32, f32),
     last_height: f32,
     deleting: Option<(usize, std::time::Instant)>,
 }
@@ -76,6 +77,7 @@ impl App {
     fn new() -> Self {
         let eframe_size = hyprland::window_size(0.618, 0.618, (500.0, 400.0));
         let max_size = (eframe_size.0 * 2.0, eframe_size.1 * 2.0);
+        let monitor_size = hyprland::monitor_logical_size();
 
         Self {
             query: String::new(),
@@ -91,6 +93,7 @@ impl App {
             scroll_momentum: ScrollMomentum::new(),
             last_ensured: None,
             max_size,
+            monitor_size,
             last_height: 0.0,
             deleting: None,
         }
@@ -452,10 +455,15 @@ impl App {
                 let target_height = desired_height.min(self.max_size.1);
                 if (target_height - self.last_height).abs() > 1.0 {
                     self.last_height = target_height;
-                    hyprland::dispatch_async(&format!(
-                        r#"hl.dsp.window.resize({{ x = {}, y = {}, window = "class:clipboard" }})"#,
+                    // Top-anchored: pin the input at a fixed Y as the list grows,
+                    // instead of letting the resize recentroid (which would slide
+                    // the input vertically each keystroke).
+                    hyprland::resize_anchored(
+                        "clipboard",
                         self.max_size.0 as i32, target_height as i32,
-                    ));
+                        self.monitor_size.0, self.monitor_size.1,
+                        common::Y_ANCHOR_RATIO,
+                    );
                 }
 
                 let list_height = (self.max_size.1 - header_height).max(common::row_height());

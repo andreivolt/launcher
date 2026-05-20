@@ -6,6 +6,9 @@ use std::sync::OnceLock;
 
 pub const GOLDEN: f32 = 1.618;
 pub const MAX_VISIBLE_ITEMS: usize = 12;
+/// Y offset (as fraction of monitor height) where the input row sits.
+/// 0.236 = 1 - 1/golden, matches the spawn rule in flake.nix nixosModule.
+pub const Y_ANCHOR_RATIO: f32 = 0.236;
 
 pub fn text_size() -> f32 {
     static V: OnceLock<f32> = OnceLock::new();
