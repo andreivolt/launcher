@@ -499,6 +499,28 @@ pub fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// Normalize clipboard text for list-row display:
+/// strip leading whitespace, collapse internal whitespace runs (including
+/// newlines/tabs) to a single space. Original content is preserved at paste
+/// time — this only adjusts the rendered preview.
+pub fn clip_display_line(s: &str) -> String {
+    let trimmed = s.trim_start();
+    let mut out = String::with_capacity(trimmed.len());
+    let mut in_ws = false;
+    for ch in trimmed.chars() {
+        if ch.is_whitespace() {
+            if !in_ws {
+                out.push(' ');
+                in_ws = true;
+            }
+        } else {
+            out.push(ch);
+            in_ws = false;
+        }
+    }
+    out
+}
+
 /// Workspace chip colors — sharp 18x18 square with the workspace number
 /// centered inside. Background is a subtle elevated-surface gray, foreground
 /// a warm off-white. No gold accent (reserved for window-focus signaling).

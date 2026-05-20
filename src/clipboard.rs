@@ -584,7 +584,8 @@ impl App {
                                                     egui::Align2::LEFT_TOP, &display_text, mono_font, text_color,
                                                 );
                                             } else {
-                                                let line = e.text.split('\n').next().unwrap_or(&e.text).trim_start();
+                                                let display = common::clip_display_line(&e.text);
+                                                let line = display.as_str();
                                                 let text_x = rx + 12.0;
                                                 let avail_w = rect.max.x - text_x - 12.0;
                                                 let text_pos = egui::pos2(text_x, content_y);
