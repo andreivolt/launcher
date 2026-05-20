@@ -499,6 +499,25 @@ pub fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// Workspace chip colors — sharp 18x18 square with the workspace number
+/// centered inside. Background is a subtle elevated-surface gray, foreground
+/// a warm off-white. No gold accent (reserved for window-focus signaling).
+pub mod chip {
+    use eframe::egui::Color32;
+    pub const SIZE: f32 = 18.0;
+    pub const BG: Color32 = Color32::from_rgb(0x25, 0x22, 0x20);
+    pub const FG: Color32 = Color32::from_rgb(0xd4, 0xd0, 0xca);
+    pub const FONT_SIZE: f32 = 11.0;
+}
+
+/// Paint a workspace chip centered at `center`. Square, sharp corners.
+pub fn paint_workspace_chip(ui: &Ui, center: egui::Pos2, label: &str) {
+    let rect = Rect::from_center_size(center, egui::vec2(chip::SIZE, chip::SIZE));
+    ui.painter().rect_filled(rect, 0.0, chip::BG);
+    let font = FontId::new(chip::FONT_SIZE, FontFamily::Proportional);
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, font, chip::FG);
+}
+
 /// Paint fade gradients at top and bottom edges of a scroll area.
 /// Call after rendering the scroll area content, passing the scroll area's outer rect.
 pub fn paint_scroll_fade(ui: &Ui, rect: Rect, fade_h: f32) {

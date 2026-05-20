@@ -598,19 +598,12 @@ impl App {
                                 }
 
                                 if let Entry::Window { workspace, .. } = e {
-                                    let dot_x = content_width - row_padding() - icon_container() / 2.0;
-                                    ui.painter().circle_filled(
-                                        egui::pos2(dot_x, row_y + row_height / 2.0),
-                                        3.0,
-                                        colors::ACCENT,
-                                    );
-                                    let ws_color = if sel { colors::TEXT_SUBTITLE } else { colors::TEXT_MUTED };
-                                    ui.painter().text(
-                                        egui::pos2(dot_x - 8.0, row_y + row_height / 2.0),
-                                        egui::Align2::RIGHT_CENTER,
+                                    let chip_cx = content_width - row_padding() - icon_container() / 2.0;
+                                    let chip_cy = row_y + row_height / 2.0;
+                                    common::paint_workspace_chip(
+                                        ui,
+                                        egui::pos2(chip_cx, chip_cy),
                                         workspace,
-                                        subtitle_font.clone(),
-                                        ws_color,
                                     );
                                 }
                             },
