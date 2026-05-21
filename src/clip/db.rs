@@ -224,6 +224,77 @@ impl ClipboardDb {
         ).optional()
     }
 
+    /// Get a single entry by its content hash.
+    ///
+    /// `content_hash` is uniquely indexed, so this matches at most one row.
+    /// Used by clip-sync as the merge-key lookup.
+    pub fn get_by_hash(&self, content_hash: i64) -> rusqlite::Result<Option<Entry>> {
+        self.conn.query_row(
+            "SELECT id, content, content_hash, mime, source_app, created_at, last_used, pinned
+             FROM entries WHERE content_hash = ?1",
+            params![content_hash],
+            |row| {
+                Ok(Entry {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    content_hash: row.get(2)?,
+                    mime: row.get(3)?,
+                    source_app: row.get(4)?,
+                    created_at: row.get(5)?,
+                    last_used: row.get(6)?,
+                    pinned: row.get::<_, i64>(7)? != 0,
+                })
+            },
+        ).optional()
+    }
+
+    /// All content hashes currently stored, in no particular order.
+    ///
+    /// This is the set clip-sync advertises to its peer for reconciliation.
+    pub fn all_hashes(&self) -> rusqlite::Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare("SELECT content_hash FROM entries")?;
+        let hashes = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(hashes)
+    }
+
+    /// The highest row id currently in the table, or 0 if empty.
+    ///
+    /// clip-sync's DB observer uses this as a cheap high-water mark to detect
+    /// rows clipd has appended since the last poll.
+    pub fn max_id(&self) -> rusqlite::Result<i64> {
+        self.conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM entries", [], |row| row.get(0))
+    }
+
+    /// Content hashes of all rows with `id` strictly greater than `after_id`.
+    ///
+    /// Returns the newly-appended hashes so the observer can push just those to
+    /// the peer without re-scanning the whole table.
+    pub fn hashes_after_id(&self, after_id: i64) -> rusqlite::Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT content_hash FROM entries WHERE id > ?1 ORDER BY id")?;
+        let hashes = stmt
+            .query_map(params![after_id], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(hashes)
+    }
+
+    /// The most recent `created_at` across all entries, or 0 if empty.
+    ///
+    /// clip-sync uses this to decide whether an entry merged from the peer is
+    /// the newest copy known to either machine and should take the live
+    /// clipboard.
+    pub fn max_created_at(&self) -> rusqlite::Result<i64> {
+        self.conn.query_row(
+            "SELECT COALESCE(MAX(created_at), 0) FROM entries",
+            [],
+            |row| row.get(0),
+        )
+    }
+
     /// Update the last_used timestamp for an entry (called on paste).
     pub fn update_last_used(&self, id: i64) -> rusqlite::Result<()> {
         let now = Self::now();
