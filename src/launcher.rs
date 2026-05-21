@@ -372,8 +372,7 @@ impl App {
 
             match e {
                 Entry::Desktop { exec, terminal, .. } => {
-                    let parts: Vec<&str> = exec.split_whitespace()
-                        .filter(|s| !s.starts_with('%')).collect();
+                    let parts = desktop::parse_exec(exec);
                     if let Some((bin, args)) = parts.split_first() {
                         if *terminal {
                             let term = env::var("TERMINAL").unwrap_or("kitty".into());

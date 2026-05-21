@@ -164,6 +164,66 @@ pub fn parse_desktop_file(path: &Path) -> Vec<DesktopEntry> {
     entries
 }
 
+/// Split a desktop-entry `Exec=` value into argv per the freedesktop Desktop
+/// Entry spec: arguments are separated by whitespace, may be enclosed in double
+/// quotes, and inside quotes `"`, `` ` ``, `$` and `\` are backslash-escaped.
+/// Field codes (`%f %F %u %U %c %k %i` …) are dropped since the launcher passes
+/// no files/URLs; literal `%%` becomes `%`.
+pub fn parse_exec(exec: &str) -> Vec<String> {
+    let mut argv = Vec::new();
+    let mut arg = String::new();
+    let mut in_arg = false;
+    let mut chars = exec.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' if !in_arg => {}
+            ' ' | '\t' => {
+                argv.push(std::mem::take(&mut arg));
+                in_arg = false;
+            }
+            '"' => {
+                // Quoted segment: read until the closing quote, honoring the
+                // spec's backslash escaping of `"`, `` ` ``, `$`, `\`.
+                in_arg = true;
+                while let Some(qc) = chars.next() {
+                    match qc {
+                        '"' => break,
+                        '\\' => match chars.next() {
+                            Some(e @ ('"' | '`' | '$' | '\\')) => arg.push(e),
+                            Some(other) => {
+                                arg.push('\\');
+                                arg.push(other);
+                            }
+                            None => arg.push('\\'),
+                        },
+                        other => arg.push(other),
+                    }
+                }
+            }
+            '%' => {
+                in_arg = true;
+                match chars.next() {
+                    Some('%') => arg.push('%'),
+                    // Field code: a single placeholder char, expands to nothing.
+                    Some(_) => {}
+                    None => {}
+                }
+            }
+            other => {
+                in_arg = true;
+                arg.push(other);
+            }
+        }
+    }
+    if in_arg {
+        argv.push(arg);
+    }
+    // A bare field-code token (e.g. `%U`) collapses to an empty arg — drop those.
+    argv.retain(|a| !a.is_empty());
+    argv
+}
+
 /// Collect all desktop entries from XDG dirs, deduplicated by filename
 pub fn collect_entries() -> Vec<DesktopEntry> {
     let mut seen_files = std::collections::HashSet::new();
@@ -310,4 +370,44 @@ pub fn wmclass_icon_map(entries: &[DesktopEntry], icon_index: &HashMap<String, P
         }
     }
     map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_exec;
+
+    #[test]
+    fn unquoted() {
+        assert_eq!(parse_exec("nxplayer"), ["nxplayer"]);
+        assert_eq!(parse_exec("foo --bar baz"), ["foo", "--bar", "baz"]);
+    }
+
+    #[test]
+    fn quoted_program_path() {
+        // NoMachine: nixpkgs keeps the quotes when rewriting the store path.
+        assert_eq!(
+            parse_exec("\"/nix/store/abc-nomachine/bin/nxplayer\""),
+            ["/nix/store/abc-nomachine/bin/nxplayer"],
+        );
+    }
+
+    #[test]
+    fn quoted_path_with_spaces_and_field_code() {
+        assert_eq!(
+            parse_exec("\"/path with spaces/app\" %U"),
+            ["/path with spaces/app"],
+        );
+    }
+
+    #[test]
+    fn field_codes_dropped_literal_percent_kept() {
+        assert_eq!(parse_exec("app %f %F %u %U %c %k %i"), ["app"]);
+        assert_eq!(parse_exec("app 100%%done"), ["app", "100%done"]);
+    }
+
+    #[test]
+    fn backslash_escapes_inside_quotes() {
+        assert_eq!(parse_exec(r#""a\"b""#), [r#"a"b"#]);
+        assert_eq!(parse_exec(r#""price\$5""#), ["price$5"]);
+    }
 }
