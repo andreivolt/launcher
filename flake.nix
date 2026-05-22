@@ -88,6 +88,26 @@
         let
           cfg = config.services.launcher;
           launcherPkg = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          # Derive HYPRLAND_INSTANCE_SIGNATURE from the live socket directory
+          # instead of trusting the env var. UWSM is unreliable about importing
+          # the var into the systemd-user manager's environment, so PassEnvironment
+          # often delivers nothing — on such hosts every rule injection below
+          # silently no-ops and the windows drop to tiled. The live instance is
+          # the dir under $XDG_RUNTIME_DIR/hypr/ holding both .socket.sock and
+          # .socket2.sock; its basename is the signature.
+          resolveHyprSig = ''
+            if [ -z "''${HYPRLAND_INSTANCE_SIGNATURE:-}" ] \
+               || [ ! -S "''${XDG_RUNTIME_DIR}/hypr/''${HYPRLAND_INSTANCE_SIGNATURE}/.socket2.sock" ]; then
+              for _d in "''${XDG_RUNTIME_DIR}/hypr/"*/; do
+                if [ -S "''${_d}.socket.sock" ] && [ -S "''${_d}.socket2.sock" ]; then
+                  _d="''${_d%/}"
+                  HYPRLAND_INSTANCE_SIGNATURE="''${_d##*/}"
+                  export HYPRLAND_INSTANCE_SIGNATURE
+                  break
+                fi
+              done
+            fi
+          '';
           # Overlay window rules, injected via `hyprctl eval`: the compositor
           # runs a lua config and never reads hyprlang windowrules, so the
           # rules are applied to the live lua state when the service starts.
@@ -95,7 +115,8 @@
           # configreloaded, since hyprctl reload rebuilds the rule list from
           # the persistent Lua config and would otherwise drop these.
           hyprRules = cls: pkgs.writeShellScript "launcher-hypr-rules-${cls}" ''
-            [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ] || exit 0
+            ${resolveHyprSig}
+            [ -n "''${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || exit 0
             ${pkgs.hyprland}/bin/hyprctl eval '
               hl.window_rule({ match = { class = "${cls}" }, workspace = "special:${cls} silent" });
               hl.window_rule({ match = { class = "${cls}" }, float = true });
@@ -112,14 +133,19 @@
           # Without this, every `hyprctl reload` would wipe the runtime-
           # injected rules and the launcher window would drop to tiled.
           hyprWatcher = pkgs.writeShellScript "launcher-hypr-watcher" ''
-            [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ] || exit 0
-            SOCK="''${XDG_RUNTIME_DIR}/hypr/''${HYPRLAND_INSTANCE_SIGNATURE}/.socket2.sock"
-            # Wait for the event socket to exist (Hyprland may still be starting).
+            # Wait for the event socket to exist (Hyprland may still be starting),
+            # re-resolving the signature each pass — UWSM may not have populated
+            # the env var yet, or at all.
+            SOCK=""
             for _ in $(seq 1 30); do
-              [ -S "$SOCK" ] && break
+              ${resolveHyprSig}
+              if [ -n "''${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
+                SOCK="''${XDG_RUNTIME_DIR}/hypr/''${HYPRLAND_INSTANCE_SIGNATURE}/.socket2.sock"
+                [ -S "$SOCK" ] && break
+              fi
               sleep 0.2
             done
-            [ -S "$SOCK" ] || exit 0
+            [ -n "$SOCK" ] && [ -S "$SOCK" ] || exit 0
             # Stream events; re-apply rules on configreloaded.
             ${pkgs.socat}/bin/socat -U - UNIX-CONNECT:"$SOCK" | while IFS= read -r line; do
               case "$line" in
