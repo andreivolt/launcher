@@ -199,6 +199,9 @@
               description = "Clipboard daemon";
               wantedBy = [ "hyprland-session.target" ];
               partOf = [ "hyprland-session.target" ];
+              # clipd shells out to wl-copy to persist each new entry onto the
+              # live selection so it outlives the app that copied it.
+              path = [ pkgs.wl-clipboard ];
               serviceConfig = {
                 ExecStart = "${launcherPkg}/bin/clipd";
                 Restart = "on-failure";
